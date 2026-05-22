@@ -104,3 +104,8 @@ LOGGING = {
         },
     },
 }
+
+# ── django-tenants: public schema URL conf ────────────────────
+# Allows Railway healthcheck (and other non-tenant hosts) to reach
+# the health endpoint without a matching tenant domain in the DB.
+PUBLIC_SCHEMA_URLCONF = 'config.urls_public'
