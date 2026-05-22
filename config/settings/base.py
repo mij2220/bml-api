@@ -26,10 +26,6 @@ SHARED_APPS = [
     'drf_spectacular',
     'django_filters',
     'apps.accounts',
-]
-
-TENANT_APPS = [
-    'django.contrib.contenttypes',
     'apps.core',
     'apps.employees',
     'apps.leaves',
@@ -37,6 +33,10 @@ TENANT_APPS = [
     'apps.replacements',
     'apps.notifications',
     'apps.reports',
+]
+
+TENANT_APPS = [
+    'django.contrib.contenttypes',
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [app for app in TENANT_APPS if app not in SHARED_APPS]
