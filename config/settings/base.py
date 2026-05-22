@@ -161,3 +161,6 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'Multi-tenant SaaS Leave Management',
     'VERSION': '1.0.0',
 }
+
+# django-tenants: fallback URL conf for non-tenant hosts (Railway healthcheck)
+PUBLIC_SCHEMA_URLCONF = 'config.urls_public'
