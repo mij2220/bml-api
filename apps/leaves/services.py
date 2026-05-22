@@ -159,6 +159,16 @@ class LeaveApplicationService:
         if application.status != 'pending':
             raise LeaveValidationError('Only pending applications can be approved.')
 
+        # Block approval if leave dates have already passed
+        from django.utils import timezone as tz
+        today = tz.now().date()
+        if application.end_date < today:
+            raise LeaveValidationError(
+                'This leave application cannot be approved because the leave dates have already passed. '
+                'Please ask the employee to cancel it, or reject it with a note.',
+                'start_date'
+            )
+
         leave_type = application.leave_type
         current_level = application.current_approval_level
 
@@ -193,9 +203,27 @@ class LeaveApplicationService:
                     year=year,
                 )
                 balance.used += application.total_days
-                balance.save(update_fields=['used'])
+                # Increment split count for AL and SL
+                if application.leave_type.code in ('AL', 'SL'):
+                    balance.splits_used = (balance.splits_used or 0) + 1
+                balance.save(update_fields=['used', 'splits_used'])
             except LeaveBalance.DoesNotExist:
-                pass
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"No balance record found for employee={application.employee.id} "
+                    f"leave_type={application.leave_type.id} year={year} — "
+                    f"creating one and deducting"
+                )
+                # Create balance record and deduct
+                balance = LeaveBalance.objects.create(
+                    employee=application.employee,
+                    leave_type=application.leave_type,
+                    year=year,
+                    allocated=application.leave_type.accrual_amount or 0,
+                    used=application.total_days,
+                    carried_over=0,
+                )
 
             # Update employee status if leave starts today or earlier
             if application.start_date <= timezone.now().date():
@@ -275,6 +303,7 @@ class LeaveApplicationService:
         if application.status not in ('pending', 'approved'):
             raise LeaveValidationError('This application cannot be cancelled.')
 
+
         old_status = application.status
         application.status = 'cancelled'
         application.save(update_fields=['status'])
@@ -289,7 +318,10 @@ class LeaveApplicationService:
                     year=year,
                 )
                 balance.used = max(balance.used - application.total_days, 0)
-                balance.save(update_fields=['used'])
+                # Restore split count for AL and SL
+                if application.leave_type.code in ('AL', 'SL') and balance.splits_used > 0:
+                    balance.splits_used = balance.splits_used - 1
+                balance.save(update_fields=['used', 'splits_used'])
             except LeaveBalance.DoesNotExist:
                 pass
 
@@ -305,27 +337,63 @@ class LeaveApplicationService:
 # ── Balance Initialization ─────────────────────────────────────
 
 def initialize_employee_balances(employee):
-    """Called when a new employee is created. Allocates on-join leave types."""
+    """
+    Called when a new employee is created.
+    Creates balance records for ALL active leave types with correct quotas.
+    Uses ExperienceService for AL so the quota reflects their actual experience.
+    """
+    from apps.leaves.experience import ExperienceService
+
     year = timezone.now().year
     leave_types = LeaveType.objects.filter(is_active=True)
+
+    # Fixed quotas per leave type code
+    fixed_quotas = {
+        'CL':  Decimal('10'),
+        'SL':  Decimal('16'),
+        'BD':  Decimal('1'),
+        'CD':  Decimal('2'),
+        'SHL': Decimal('2'),
+        'UL':  Decimal('0'),
+        'ML':  Decimal('90'),
+    }
+
     for lt in leave_types:
-        if lt.applies_to != 'all' and lt.applies_to != employee.employment_type:
-            continue
+        # Gender restriction check
         if lt.gender_restriction != 'none' and lt.gender_restriction != employee.gender:
             continue
+        # Employment type check
+        if lt.applies_to != 'all' and lt.applies_to != employee.employment_type:
+            continue
 
-        allocated = Decimal('0')
-        if lt.accrual_type == 'on_join':
-            allocated = lt.accrual_amount or lt.max_balance
-        elif lt.accrual_type == 'annual':
-            allocated = lt.accrual_amount or lt.max_balance
+        if lt.code == 'AL':
+            # AL uses experience-based quota — handled separately below
+            continue
+
+        # Use fixed quota if defined, otherwise fall back to accrual_amount
+        allocated = fixed_quotas.get(lt.code, lt.accrual_amount or lt.max_balance or Decimal('0'))
+
+        # Split tracking for SL
+        splits_allowed = 8 if lt.code == 'SL' else 0
 
         LeaveBalance.objects.get_or_create(
             employee=employee,
             leave_type=lt,
             year=year,
-            defaults={'allocated': allocated},
+            defaults={
+                'allocated': allocated,
+                'splits_used': 0,
+                'splits_allowed': splits_allowed,
+            },
         )
+
+    # AL: use ExperienceService for correct quota + splits based on experience
+    ExperienceService.recalculate_al_balance(
+        employee, year, triggered_by='new_employee'
+    )
+    ExperienceService.recalculate_sl_balance(
+        employee, year, triggered_by='new_employee'
+    )
 
 
 # ── Team calendar helper ───────────────────────────────────────

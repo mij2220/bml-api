@@ -62,8 +62,16 @@ class Employee(BaseModel):
     date_of_birth = models.DateField(null=True, blank=True)
     phone = models.CharField(max_length=20, blank=True)
     joining_date = models.DateField()
+    experience_start_date = models.DateField(
+        null=True, blank=True,
+        help_text='Career start date (may predate joining this company). Used to calculate total experience for leave quota.'
+    )
     employment_type = models.CharField(max_length=20, choices=EMPLOYMENT_TYPE_CHOICES)
     salary_grade = models.CharField(max_length=50, blank=True)
+    account_code = models.CharField(
+        max_length=50, blank=True, default='',
+        help_text='Payroll / ERP account code (Employee A/C Code)'
+    )
     department = models.ForeignKey(Department, on_delete=models.PROTECT, related_name='employees')
     designation = models.ForeignKey(Designation, on_delete=models.PROTECT, related_name='employees')
     reporting_manager = models.ForeignKey('self', null=True, blank=True,

@@ -107,6 +107,8 @@ class LeaveBalance(BaseModel):
     allocated = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     used = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     carried_over = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    splits_used = models.IntegerField(default=0, help_text='Number of leave splits taken this year')
+    splits_allowed = models.IntegerField(default=0, help_text='Max splits allowed for this employee/type/year')
 
     class Meta:
         unique_together = ['employee', 'leave_type', 'year']
@@ -139,6 +141,18 @@ class LeaveApplication(BaseModel):
     )
     total_days = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     reason = models.TextField()
+    contact_during_leave = models.CharField(
+        max_length=20, blank=True, default='',
+        help_text='Employee phone number during leave'
+    )
+    address_during_leave = models.TextField(
+        blank=True, default='',
+        help_text='Employee address during leave'
+    )
+    duty_date_for_cd = models.DateField(
+        null=True, blank=True,
+        help_text='Date of duty on second rest (CD leave only)'
+    )
     attachment = models.FileField(
         upload_to='leave_attachments/', null=True, blank=True
     )
@@ -194,3 +208,29 @@ class LeaveApproval(BaseModel):
             f'{self.application.reference_number} — '
             f'L{self.level} {self.action} by {self.approver.full_name}'
         )
+
+
+class LeaveQuotaLog(BaseModel):
+    """Audit trail for every quota recalculation — who changed, why, when."""
+    employee = models.ForeignKey(
+        'employees.Employee', on_delete=models.CASCADE, related_name='quota_logs'
+    )
+    leave_type = models.ForeignKey(
+        LeaveType, on_delete=models.CASCADE, related_name='quota_logs'
+    )
+    year = models.IntegerField()
+    old_allocated = models.DecimalField(max_digits=6, decimal_places=2)
+    new_allocated = models.DecimalField(max_digits=6, decimal_places=2)
+    old_splits_allowed = models.IntegerField(default=0)
+    new_splits_allowed = models.IntegerField(default=0)
+    reason = models.CharField(max_length=200)
+    triggered_by = models.CharField(
+        max_length=50, default='system',
+        help_text='system / hr_manual / year_end / monthly_job'
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.employee.full_name} — {self.leave_type.code} {self.year}: {self.old_allocated}→{self.new_allocated}'

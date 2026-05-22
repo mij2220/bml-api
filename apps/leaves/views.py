@@ -207,6 +207,21 @@ class LeaveCancelView(APIView):
             return error(str(e), status=400)
 
 
+class LeaveAttachmentView(APIView):
+    permission_classes = [IsEmployee]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk):
+        try:
+            app = LeaveApplication.objects.get(pk=pk)
+        except LeaveApplication.DoesNotExist:
+            return error('Application not found.', status=404)
+        if 'attachment' not in request.FILES:
+            return error('No file provided.', status=400)
+        app.attachment = request.FILES['attachment']
+        app.save()
+        return success({'attachment': app.attachment.url if app.attachment else None})
+
 class PendingApprovalsView(APIView):
     permission_classes = [IsManager]
 

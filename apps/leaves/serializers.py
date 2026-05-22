@@ -48,6 +48,18 @@ class LeaveApplicationListSerializer(serializers.ModelSerializer):
     leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
     leave_type_code = serializers.CharField(source='leave_type.code', read_only=True)
     leave_type_color = serializers.CharField(source='leave_type.color', read_only=True)
+    replacement_employee = serializers.SerializerMethodField()
+
+    def get_replacement_employee(self, obj):
+        try:
+            r = obj.replacement
+            return {
+                'id': str(r.replacement_employee.id),
+                'full_name': r.replacement_employee.full_name,
+                'employee_id': r.replacement_employee.employee_id,
+            }
+        except Exception:
+            return None
 
     class Meta:
         model = LeaveApplication
@@ -56,6 +68,7 @@ class LeaveApplicationListSerializer(serializers.ModelSerializer):
             'department', 'leave_type_name', 'leave_type_code', 'leave_type_color',
             'start_date', 'end_date', 'total_days', 'status',
             'is_half_day', 'applied_at', 'current_approval_level',
+            'replacement_employee',
         ]
 
 
@@ -63,7 +76,30 @@ class LeaveApplicationDetailSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source='employee.full_name', read_only=True)
     leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
     leave_type_color = serializers.CharField(source='leave_type.color', read_only=True)
+    employee_id_code = serializers.SerializerMethodField()
+    department = serializers.SerializerMethodField()
+    attachment_url = serializers.SerializerMethodField()
     approvals = LeaveApprovalSerializer(many=True, read_only=True)
+
+    def get_employee_id_code(self, obj):
+        return obj.employee.employee_id if obj.employee else None
+
+    def get_department(self, obj):
+        try:
+            return obj.employee.department.name
+        except Exception:
+            return None
+
+    def get_attachment_url(self, obj):
+        if obj.attachment:
+            url = obj.attachment.url
+            # Return absolute URL — in dev, Django serves media on 8000
+            if url.startswith('/'):
+                from django.conf import settings
+                host = getattr(settings, 'MEDIA_HOST', 'http://localhost:8000')
+                return host + url
+            return url
+        return None
 
     class Meta:
         model = LeaveApplication
@@ -71,8 +107,8 @@ class LeaveApplicationDetailSerializer(serializers.ModelSerializer):
             'id', 'reference_number', 'employee_name',
             'leave_type', 'leave_type_name', 'leave_type_color',
             'start_date', 'end_date', 'is_half_day', 'half_day_period',
-            'hours_requested', 'total_days', 'reason',
-            'status', 'applied_at', 'current_approval_level', 'approvals',
+            'hours_requested', 'total_days', 'reason', 'contact_during_leave', 'address_during_leave', 'duty_date_for_cd',
+            'attachment', 'attachment_url', 'employee_id_code', 'department', 'status', 'applied_at', 'current_approval_level', 'approvals',
         ]
 
 

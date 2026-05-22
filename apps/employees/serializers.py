@@ -35,17 +35,85 @@ class EmployeeListSerializer(serializers.ModelSerializer):
                   'designation_name','manager_name','status','employment_type','profile_picture']
 
 class EmployeeDetailSerializer(serializers.ModelSerializer):
+    experience_display = serializers.SerializerMethodField()
+    experience_years = serializers.SerializerMethodField()
+    experience_tier = serializers.SerializerMethodField()
+
+    def get_experience_display(self, obj):
+        try:
+            from apps.leaves.experience import ExperienceService
+            return ExperienceService.get_experience_display(obj)
+        except Exception:
+            return None
+
+    def get_experience_years(self, obj):
+        try:
+            from apps.leaves.experience import ExperienceService
+            return float(ExperienceService.get_experience_years(obj))
+        except Exception:
+            return None
+
+    def get_experience_tier(self, obj):
+        try:
+            from apps.leaves.experience import ExperienceService
+            return ExperienceService.get_experience_tier(obj)
+        except Exception:
+            return None
+
     email = serializers.EmailField(source='user.email', read_only=True)
     role = serializers.CharField(source='user.role', read_only=True)
     department = DepartmentSerializer(read_only=True)
     designation = DesignationSerializer(read_only=True)
     branch = BranchSerializer(read_only=True)
     reporting_manager = EmployeeListSerializer(read_only=True)
+    reporting_manager_id = serializers.UUIDField(required=False, allow_null=True, write_only=True)
+    profile_picture_url  = serializers.SerializerMethodField(read_only=True)
+
+    def get_profile_picture_url(self, obj):
+        if obj.profile_picture and obj.profile_picture.name:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.profile_picture.url)
+            # Fallback without request context
+            from django.conf import settings as django_settings
+            base = getattr(django_settings, 'MEDIA_URL', '/media/')
+            return f'http://localhost:8000{base}{obj.profile_picture.name}'
+        return None
     class Meta:
         model = Employee
         fields = ['id','employee_id','full_name','email','role','cnic','gender','date_of_birth',
-                  'phone','joining_date','employment_type','salary_grade','department','designation',
-                  'branch','reporting_manager','status','profile_picture','created_at','updated_at']
+                  'phone','joining_date','experience_start_date','experience_display','experience_years','experience_tier','employment_type','salary_grade', 'account_code','department','designation',
+                  'branch','reporting_manager','reporting_manager_id','status','profile_picture','profile_picture_url','created_at','updated_at']
+
+    def update(self, instance, validated_data):
+        from apps.employees.models import Employee as Emp
+        manager_id = validated_data.pop('reporting_manager_id', None)
+        if manager_id is not None:
+            if manager_id == '' or str(manager_id) == 'None':
+                instance.reporting_manager = None
+            else:
+                try:
+                    instance.reporting_manager = Emp.objects.get(pk=manager_id)
+                except Emp.DoesNotExist:
+                    pass
+        # Handle department_id, designation_id, branch_id
+        for fk, model_path in [('department_id', 'apps.employees.models.Department'),
+                                 ('designation_id', 'apps.employees.models.Designation'),
+                                 ('branch_id', 'apps.employees.models.Branch')]:
+            fk_val = validated_data.pop(fk, None)
+            if fk_val is not None:
+                import importlib
+                parts = model_path.rsplit('.', 1)
+                mod = importlib.import_module(parts[0])
+                Model = getattr(mod, parts[1])
+                try:
+                    setattr(instance, fk.replace('_id', ''), Model.objects.get(pk=fk_val))
+                except Model.DoesNotExist:
+                    pass
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
         read_only_fields = ['id','created_at','updated_at']
 
 class EmployeeCreateSerializer(serializers.ModelSerializer):
@@ -59,7 +127,7 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Employee
         fields = ['employee_id','full_name','email','password','role','cnic','gender',
-                  'date_of_birth','phone','joining_date','employment_type','salary_grade',
+                  'date_of_birth','phone','joining_date','experience_start_date','employment_type','salary_grade',
                   'department_id','designation_id','branch_id','reporting_manager_id']
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
