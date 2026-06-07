@@ -136,6 +136,7 @@ class LeaveApplicationListView(APIView):
                 half_day_period=d.get('half_day_period'),
                 hours_requested=d.get('hours_requested'),
                 duty_date_for_cd=d.get('duty_date_for_cd'),
+                doctor_approval=d.get('doctor_approval', False),
                 attachment=request.FILES.get('attachment'),
                 request=request,
             )

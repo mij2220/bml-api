@@ -125,6 +125,7 @@ class LeaveApplicationCreateSerializer(serializers.Serializer):
         max_digits=5, decimal_places=2, required=False, allow_null=True
     )
     duty_date_for_cd = serializers.DateField(required=False, allow_null=True)
+    doctor_approval = serializers.BooleanField(default=False, required=False)
 
     def validate(self, data):
         if data['start_date'] > data['end_date']:

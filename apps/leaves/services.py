@@ -27,9 +27,11 @@ class LeaveApplicationService:
 
     @staticmethod
     def validate_application(employee, leave_type, start_date, end_date,
-                              is_half_day=False, hours_requested=None, skip_notice=False):
+                              is_half_day=False, hours_requested=None, skip_notice=False,
+                              doctor_approval=False):
         """
-        Apply all 7 validation rules. Raises LeaveValidationError on failure.
+        Apply all validation rules. Raises LeaveValidationError on failure.
+        doctor_approval=True: allows SL application beyond 16-day quota.
         """
         today = timezone.now().date()
 
@@ -93,12 +95,19 @@ class LeaveApplicationService:
                     employee=employee, leave_type=leave_type, year=year
                 )
                 if balance.available < total_days:
-                    raise LeaveValidationError(
-                        f'Insufficient balance. Available: {balance.available} days, Requested: {total_days} days.',
-                        'leave_type',
-                    )
+                    # SL with doctor approval can exceed quota (special medical case)
+                    if leave_type.code == 'SL' and doctor_approval:
+                        pass  # allowed — doctor has approved extended sick leave
+                    else:
+                        raise LeaveValidationError(
+                            f'Insufficient balance. Available: {balance.available} days, Requested: {total_days} days.',
+                            'leave_type',
+                        )
             except LeaveBalance.DoesNotExist:
-                raise LeaveValidationError('No leave balance found for this leave type.', 'leave_type')
+                if leave_type.code == 'SL' and doctor_approval:
+                    pass  # no balance record but doctor approved
+                else:
+                    raise LeaveValidationError('No leave balance found for this leave type.', 'leave_type')
         # Unpaid leave (is_paid=False): no balance check — always allowed
 
         # Rule 9 — overlap check
@@ -113,6 +122,37 @@ class LeaveApplicationService:
                 'You already have a pending or approved leave in this date range.', 'start_date'
             )
 
+        # Rule 10 — 14-day consecutive AL requirement
+        # Employee must retain at least 14 days for a consecutive block once per year.
+        # If applying AL would leave remaining balance < 14 AND they haven't yet
+        # taken a 14+ consecutive block this year, block the application.
+        if leave_type.code == 'AL' and not is_half_day:
+            try:
+                al_balance = LeaveBalance.objects.get(
+                    employee=employee, leave_type=leave_type, year=year
+                )
+                remaining_after = al_balance.available - total_days
+                # Check if employee has already taken a 14+ day consecutive block
+                from django.db.models import F
+                has_long_block = LeaveApplication.objects.filter(
+                    employee=employee,
+                    leave_type=leave_type,
+                    status='approved',
+                    start_date__year=year,
+                ).annotate(
+                    duration=F('total_days')
+                ).filter(total_days__gte=14).exists()
+
+                if not has_long_block and remaining_after < 14:
+                    raise LeaveValidationError(
+                        f'You must retain at least 14 days for a consecutive annual leave block. '
+                        f'Remaining after this application: {float(remaining_after):.1f} days. '
+                        f'Please ensure you take at least 14 consecutive AL days at some point this year.',
+                        'end_date',
+                    )
+            except LeaveBalance.DoesNotExist:
+                pass  # No balance record — skip this check
+
         return total_days
 
     # ── Submit ─────────────────────────────────────────────────
@@ -122,9 +162,10 @@ class LeaveApplicationService:
     def submit_application(employee, leave_type, start_date, end_date,
                            reason, is_half_day=False, half_day_period=None,
                            hours_requested=None, duty_date_for_cd=None,
-                           attachment=None, request=None):
+                           doctor_approval=False, attachment=None, request=None):
         total_days = LeaveApplicationService.validate_application(
-            employee, leave_type, start_date, end_date, is_half_day, hours_requested
+            employee, leave_type, start_date, end_date, is_half_day, hours_requested,
+            doctor_approval=doctor_approval
         )
 
         application = LeaveApplication.objects.create(
@@ -306,6 +347,20 @@ class LeaveApplicationService:
         if application.status not in ('pending', 'approved'):
             raise LeaveValidationError('This application cannot be cancelled.')
 
+        # 2-day rule: employee cannot cancel within 2 days of leave start
+        # (Manager/HR can always cancel via recall)
+        from django.utils import timezone as tz
+        today = tz.now().date()
+        is_manager_or_hr = False
+        if request and request.user:
+            is_manager_or_hr = request.user.role in ('manager', 'hr_admin', 'super_admin')
+        days_until_start = (application.start_date - today).days
+        if days_until_start < 2 and not is_manager_or_hr:
+            raise LeaveValidationError(
+                f'Cancellation is not allowed within 2 days of leave start date. '
+                f'Leave starts on {application.start_date}. Contact your manager to cancel.',
+                'start_date',
+            )
 
         old_status = application.status
         application.status = 'cancelled'
