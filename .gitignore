@@ -34,3 +34,4 @@ htmlcov/
 .railway/
 *.bak_*
 .github/
+*.bak_*
