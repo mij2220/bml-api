@@ -85,20 +85,21 @@ class LeaveApplicationService:
                 'end_date',
             )
 
-        # Rule 8 — balance check (not for unpaid leave)
+        # Rule 8 — balance check (skip entirely for unpaid leave types)
         year = timezone.now().year
-        try:
-            balance = LeaveBalance.objects.get(
-                employee=employee, leave_type=leave_type, year=year
-            )
-            if balance.available < total_days:
-                raise LeaveValidationError(
-                    f'Insufficient balance. Available: {balance.available} days, Requested: {total_days} days.',
-                    'leave_type',
+        if leave_type.is_paid:
+            try:
+                balance = LeaveBalance.objects.get(
+                    employee=employee, leave_type=leave_type, year=year
                 )
-        except LeaveBalance.DoesNotExist:
-            if leave_type.is_paid:
+                if balance.available < total_days:
+                    raise LeaveValidationError(
+                        f'Insufficient balance. Available: {balance.available} days, Requested: {total_days} days.',
+                        'leave_type',
+                    )
+            except LeaveBalance.DoesNotExist:
                 raise LeaveValidationError('No leave balance found for this leave type.', 'leave_type')
+        # Unpaid leave (is_paid=False): no balance check — always allowed
 
         # Rule 9 — overlap check
         overlapping = LeaveApplication.objects.filter(
