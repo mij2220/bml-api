@@ -608,9 +608,8 @@ class LeavePDFView(APIView):
             pass_header = [[
                 logo if _os.path.exists(logo_path) else P(''),
                 P('LEAVE PASS', 14, bold=True, align=TA_CENTER),
-                P(f'Ref: {app.reference_number}
-Generated: {__import__("django.utils.timezone", fromlist=["timezone"]).timezone.now().strftime("%d %b %Y")}',
-                  7, color=MDGRAY, align=TA_RIGHT),
+                P('Ref: ' + app.reference_number + ' | Generated: ' + __import__('django.utils', fromlist=['timezone']).timezone.now().strftime('%d %b %Y'),
+                    7, color=MDGRAY, align=TA_RIGHT),
             ]]
             ph_t = Table(pass_header, colWidths=[3.5*cm, W-7.5*cm, 4*cm])
             ph_t.setStyle(TableStyle([
