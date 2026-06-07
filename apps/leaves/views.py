@@ -682,5 +682,4 @@ class LeavePDFView(APIView):
 
         except Exception as e:
             import traceback
-            return error(f'PDF generation failed: {str(e)}
-{traceback.format_exc()}', status=500)
+            return error('PDF generation failed: ' + str(e), status=500)
