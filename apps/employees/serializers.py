@@ -29,10 +29,16 @@ class EmployeeListSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source='department.name', read_only=True)
     designation_name = serializers.CharField(source='designation.name', read_only=True)
     manager_name = serializers.CharField(source='reporting_manager.full_name', read_only=True, default=None)
+    reporting_manager_id = serializers.SerializerMethodField()
+
+    def get_reporting_manager_id(self, obj):
+        return str(obj.reporting_manager_id) if obj.reporting_manager_id else None
+
     class Meta:
         model = Employee
         fields = ['id','employee_id','full_name','email','role','department_name',
-                  'designation_name','manager_name','status','employment_type','profile_picture']
+                  'designation_name','manager_name','reporting_manager_id',
+                  'status','employment_type','profile_picture']
 
 class EmployeeDetailSerializer(serializers.ModelSerializer):
     experience_display = serializers.SerializerMethodField()
