@@ -237,7 +237,7 @@ class LeaveAttachmentView(APIView):
             return error('Application not found.', status=404)
         if 'attachment' not in request.FILES:
             return error('No file provided.', status=400)
-        getattr(app, "attachment", None) = request.FILES['attachment']
+        attachment = request.FILES.get('attachment')
         app.save()
         return success({'attachment': getattr(app, "attachment", None).url if getattr(app, "attachment", None) else None})
 
