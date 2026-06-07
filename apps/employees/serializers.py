@@ -110,9 +110,31 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
                     setattr(instance, fk.replace('_id', ''), Model.objects.get(pk=fk_val))
                 except Model.DoesNotExist:
                     pass
+        # Track if experience_start_date is being changed
+        exp_start_changed = 'experience_start_date' in validated_data
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+
+        # Trigger AL quota recalculation when experience changes
+        if exp_start_changed:
+            try:
+                from apps.leaves.experience import ExperienceService
+                from django.utils import timezone
+                year = timezone.now().year
+                ExperienceService.recalculate_al_balance(
+                    instance, year, triggered_by='experience_date_update'
+                )
+                ExperienceService.recalculate_sl_balance(
+                    instance, year, triggered_by='experience_date_update'
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(
+                    f"Failed to recalculate quota after experience_start_date change: {e}"
+                )
+
         return instance
         read_only_fields = ['id','created_at','updated_at']
 
