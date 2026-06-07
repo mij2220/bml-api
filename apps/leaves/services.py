@@ -194,6 +194,24 @@ class LeaveApplicationService:
         log_action(request, 'leave.applied', 'LeaveApplication', application.id,
                    {'reference': application.reference_number, 'days': str(total_days)})
 
+        # Notify SIC if designated
+        if application.shift_incharge:
+            try:
+                from apps.notifications.models import Notification
+                Notification.objects.create(
+                    recipient=application.shift_incharge,
+                    type='leave_applied',
+                    title=f'SIC Approval Required — {application.reference_number}',
+                    body=(
+                        f'{application.employee.full_name} has submitted '
+                        f'{application.leave_type.name} ({application.start_date}→{application.end_date}, '
+                        f'{application.total_days}d). You are Shift Incharge (Level-2 approver).'
+                    ),
+                    action_url='/approvals',
+                )
+            except Exception:
+                pass
+
         return application
 
     # ── Approve ────────────────────────────────────────────────
