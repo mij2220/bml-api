@@ -369,7 +369,7 @@ class LeavePDFView(APIView):
                 return t
 
             def checkbox(checked=False):
-                return '■' if checked else '□'
+                return '☑' if checked else '☐'
 
             # ── Helper: get approval data ──
             approvals = list(app.approvals.all())
