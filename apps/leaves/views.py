@@ -382,12 +382,12 @@ class LeavePDFView(APIView):
             sic_date = ''
             if supervisor_approval and supervisor_approval.approver:
                 supervisor_name = supervisor_approval.approver.full_name
-                if supervisor_approval.acted_at:
-                    supervisor_date = supervisor_approval.acted_at.strftime('%d %b %Y')
+                if supervisor_approval.actioned_at:
+                    supervisor_date = supervisor_approval.actioned_at.strftime('%d %b %Y')
             if sic_approval and sic_approval.approver:
                 sic_name = sic_approval.approver.full_name
-                if sic_approval.acted_at:
-                    sic_date = sic_approval.acted_at.strftime('%d %b %Y')
+                if sic_approval.actioned_at:
+                    sic_date = sic_approval.actioned_at.strftime('%d %b %Y')
             elif app.shift_incharge:
                 sic_name = app.shift_incharge.full_name
 
@@ -585,9 +585,9 @@ class LeavePDFView(APIView):
                 [P('LEAVE NOTED & RECORDED', 7, bold=True),
                  P('BY ERD □', 9)],
                 [P('SUPERVISOR (Approval 1):', 7, color=MDGRAY),
-                 P(sup_txt, 9, bold=True, color=GREEN if supervisor_approval and supervisor_approval.status=='approved' else BLACK)],
+                 P(sup_txt, 9, bold=True, color=GREEN if supervisor_approval and supervisor_approval.action=='approved' else BLACK)],
                 [P('APPROVING AUTHORITY (SIC):', 7, color=MDGRAY),
-                 P(sic_txt, 9, bold=True, color=GREEN if sic_approval and sic_approval.status=='approved' else BLACK)],
+                 P(sic_txt, 9, bold=True, color=GREEN if sic_approval and sic_approval.action=='approved' else BLACK)],
             ]]
             story.append(cell_table(row10, [W*0.25, W*0.375, W*0.375]))
 
@@ -663,10 +663,10 @@ class LeavePDFView(APIView):
             story.append(cell_table([[
                 [P('SUPERVISOR:',7,color=MDGRAY),
                  P(sup_txt,9,bold=True,
-                   color=GREEN if supervisor_approval and supervisor_approval.status=='approved' else BLACK)],
+                   color=GREEN if supervisor_approval and supervisor_approval.action=='approved' else BLACK)],
                 [P('SHIFT INCHARGE (SIC):',7,color=MDGRAY),
                  P(sic_txt,9,bold=True,
-                   color=GREEN if sic_approval and sic_approval.status=='approved' else BLACK)],
+                   color=GREEN if sic_approval and sic_approval.action=='approved' else BLACK)],
                 [P('HR / ERD:',7,color=MDGRAY), P('_________________',9)],
             ]], [W*0.34, W*0.34, W*0.32]))
 
