@@ -237,9 +237,9 @@ class LeaveAttachmentView(APIView):
             return error('Application not found.', status=404)
         if 'attachment' not in request.FILES:
             return error('No file provided.', status=400)
-        app.attachment = request.FILES['attachment']
+        getattr(app, "attachment", None) = request.FILES['attachment']
         app.save()
-        return success({'attachment': app.attachment.url if app.attachment else None})
+        return success({'attachment': getattr(app, "attachment", None).url if getattr(app, "attachment", None) else None})
 
 class PendingApprovalsView(APIView):
     permission_classes = [IsManager]
@@ -522,11 +522,11 @@ class LeavePDFView(APIView):
             # ROW 6: Address | Telephone | Supporting Docs
             row6 = [[
                 [P('ADDRESS DURING LEAVE:', 7, color=MDGRAY),
-                 P(app.address_during_leave or '—', 9)],
+                 P(getattr(app, "address_during_leave", None) or '—', 9)],
                 [P('TELEPHONE NO.:', 7, color=MDGRAY),
-                 P(app.phone_during_leave or '—', 9)],
+                 P(getattr(app, "phone_during_leave", None) or '—', 9)],
                 [P('SUPPORTING DOCUMENTS:', 7, color=MDGRAY),
-                 P('Attached' if app.attachment else 'None', 9)],
+                 P('Attached' if getattr(app, "attachment", None) else 'None', 9)],
             ]]
             story.append(cell_table(row6, [W*0.40, W*0.25, W*0.35]))
 
