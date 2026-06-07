@@ -79,7 +79,7 @@ class MeEmployeeView(APIView):
     def get(self, request):
         try:
             emp = request.user.employee_profile
-            return success(EmployeeDetailSerializer(emp).data)
+            return success(EmployeeDetailSerializer(emp, context={'request': request}).data)
         except Exception:
             return error('No employee profile found.', status=404)
 
