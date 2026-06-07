@@ -43,4 +43,9 @@ app.conf.beat_schedule = {
         'task': 'apps.replacements.tasks.close_completed_assignments',
         'schedule': crontab(minute=0, hour=1),
     },
+    # Nightly: expire pending leaves whose dates have passed
+    'nightly-expire-overdue-leaves': {
+        'task': 'leaves.expire_overdue_leaves',
+        'schedule': crontab(hour=0, minute=5),
+    },
 }
