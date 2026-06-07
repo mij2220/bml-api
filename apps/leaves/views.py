@@ -276,3 +276,213 @@ class HolidayCalendarView(APIView):
             return error('Validation failed.', errors=s.errors, status=400)
         s.save(created_by=request.user)
         return success(s.data, status=201)
+
+
+class LeavePDFView(APIView):
+    """
+    GET /api/v1/leaves/<uuid:pk>/pdf/
+    Returns a PDF of the leave application.
+    """
+    permission_classes = [IsEmployee]
+
+    def get(self, request, pk):
+        try:
+            app = LeaveApplication.objects.select_related(
+                'employee', 'employee__department', 'employee__designation',
+                'leave_type'
+            ).prefetch_related('approvals__approver').get(pk=pk)
+        except LeaveApplication.DoesNotExist:
+            return error('Application not found.', status=404)
+
+        try:
+            from io import BytesIO
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import (
+                SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+            )
+            from django.http import HttpResponse
+
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(
+                buffer, pagesize=A4,
+                leftMargin=2*cm, rightMargin=2*cm,
+                topMargin=2*cm, bottomMargin=2*cm
+            )
+
+            styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(
+                'Title', parent=styles['Heading1'],
+                fontSize=18, textColor=colors.HexColor('#1e293b'),
+                spaceAfter=4
+            )
+            subtitle_style = ParagraphStyle(
+                'Subtitle', parent=styles['Normal'],
+                fontSize=10, textColor=colors.HexColor('#64748b'),
+                spaceAfter=12
+            )
+            label_style = ParagraphStyle(
+                'Label', parent=styles['Normal'],
+                fontSize=9, textColor=colors.HexColor('#64748b'),
+                spaceBefore=2
+            )
+            value_style = ParagraphStyle(
+                'Value', parent=styles['Normal'],
+                fontSize=11, textColor=colors.HexColor('#1e293b'),
+                spaceAfter=8
+            )
+            section_style = ParagraphStyle(
+                'Section', parent=styles['Heading2'],
+                fontSize=11, textColor=colors.HexColor('#0f172a'),
+                spaceBefore=14, spaceAfter=6,
+                borderPad=4
+            )
+
+            story = []
+
+            # ── Header ──
+            story.append(Paragraph("BookMyLeave", title_style))
+            story.append(Paragraph("Leave Application", subtitle_style))
+            story.append(HRFlowable(width="100%", thickness=1,
+                                    color=colors.HexColor('#e2e8f0')))
+            story.append(Spacer(1, 0.4*cm))
+
+            # ── Reference + Status ──
+            status_colors = {
+                'pending':   '#f59e0b',
+                'approved':  '#10b981',
+                'rejected':  '#ef4444',
+                'cancelled': '#94a3b8',
+            }
+            sc = status_colors.get(app.status, '#94a3b8')
+
+            ref_data = [
+                ['Reference Number', app.reference_number,
+                 'Status', app.status.upper()],
+            ]
+            ref_table = Table(ref_data, colWidths=[4*cm, 7*cm, 3*cm, 3*cm])
+            ref_table.setStyle(TableStyle([
+                ('FONTNAME',    (0,0), (-1,-1), 'Helvetica'),
+                ('FONTSIZE',    (0,0), (-1,-1), 10),
+                ('TEXTCOLOR',   (0,0), (0,0),  colors.HexColor('#64748b')),
+                ('TEXTCOLOR',   (2,0), (2,0),  colors.HexColor('#64748b')),
+                ('TEXTCOLOR',   (1,0), (1,0),  colors.HexColor('#1e293b')),
+                ('TEXTCOLOR',   (3,0), (3,0),  colors.HexColor(sc)),
+                ('FONTNAME',    (1,0), (1,0),  'Helvetica-Bold'),
+                ('FONTNAME',    (3,0), (3,0),  'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ]))
+            story.append(ref_table)
+            story.append(HRFlowable(width="100%", thickness=0.5,
+                                    color=colors.HexColor('#e2e8f0')))
+            story.append(Spacer(1, 0.3*cm))
+
+            # ── Employee Details ──
+            story.append(Paragraph("Employee Details", section_style))
+            emp = app.employee
+            emp_data = [
+                ['Full Name',   emp.full_name,
+                 'Employee ID', emp.employee_id],
+                ['Department',  emp.department.name if emp.department else '-',
+                 'Designation', emp.designation.name if emp.designation else '-'],
+            ]
+            emp_table = Table(emp_data, colWidths=[3.5*cm, 8*cm, 3.5*cm, 5*cm])
+            emp_table.setStyle(TableStyle([
+                ('FONTNAME',    (0,0), (-1,-1), 'Helvetica'),
+                ('FONTSIZE',    (0,0), (-1,-1), 10),
+                ('TEXTCOLOR',   (0,0), (0,-1),  colors.HexColor('#64748b')),
+                ('TEXTCOLOR',   (2,0), (2,-1),  colors.HexColor('#64748b')),
+                ('FONTNAME',    (1,0), (1,-1),  'Helvetica-Bold'),
+                ('FONTNAME',    (3,0), (3,-1),  'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+            ]))
+            story.append(emp_table)
+
+            # ── Leave Details ──
+            story.append(Paragraph("Leave Details", section_style))
+            leave_data = [
+                ['Leave Type',    app.leave_type.name,
+                 'Total Days',    str(app.total_days)],
+                ['Start Date',    str(app.start_date),
+                 'End Date',      str(app.end_date)],
+                ['Applied On',    app.applied_at.strftime('%d %b %Y'),
+                 'Half Day',      'Yes' if app.is_half_day else 'No'],
+            ]
+            if app.duty_date_for_cd:
+                leave_data.append([
+                    'Duty Date (CD)', str(app.duty_date_for_cd), '', ''
+                ])
+            leave_table = Table(leave_data, colWidths=[3.5*cm, 8*cm, 3.5*cm, 5*cm])
+            leave_table.setStyle(TableStyle([
+                ('FONTNAME',    (0,0), (-1,-1), 'Helvetica'),
+                ('FONTSIZE',    (0,0), (-1,-1), 10),
+                ('TEXTCOLOR',   (0,0), (0,-1),  colors.HexColor('#64748b')),
+                ('TEXTCOLOR',   (2,0), (2,-1),  colors.HexColor('#64748b')),
+                ('FONTNAME',    (1,0), (1,-1),  'Helvetica-Bold'),
+                ('FONTNAME',    (3,0), (3,-1),  'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+            ]))
+            story.append(leave_table)
+
+            # ── Reason ──
+            story.append(Spacer(1, 0.2*cm))
+            story.append(Paragraph("Reason", label_style))
+            story.append(Paragraph(app.reason or '-', value_style))
+
+            # ── Approval History ──
+            approvals = app.approvals.all()
+            if approvals:
+                story.append(Paragraph("Approval History", section_style))
+                appr_data = [['Level', 'Approver', 'Action', 'Date', 'Comment']]
+                for a in approvals:
+                    appr_data.append([
+                        f"Level {a.level}",
+                        a.approver.full_name,
+                        a.action.upper(),
+                        a.actioned_at.strftime('%d %b %Y'),
+                        (a.comment or '-')[:40],
+                    ])
+                appr_table = Table(appr_data,
+                                   colWidths=[2*cm, 4.5*cm, 3*cm, 3.5*cm, 7*cm])
+                appr_table.setStyle(TableStyle([
+                    ('BACKGROUND',  (0,0), (-1,0),  colors.HexColor('#f1f5f9')),
+                    ('FONTNAME',    (0,0), (-1,0),  'Helvetica-Bold'),
+                    ('FONTNAME',    (0,1), (-1,-1), 'Helvetica'),
+                    ('FONTSIZE',    (0,0), (-1,-1), 9),
+                    ('TEXTCOLOR',   (0,0), (-1,-1), colors.HexColor('#1e293b')),
+                    ('ROWBACKGROUNDS', (0,1), (-1,-1),
+                     [colors.white, colors.HexColor('#f8fafc')]),
+                    ('GRID',        (0,0), (-1,-1), 0.5,
+                     colors.HexColor('#e2e8f0')),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+                    ('TOPPADDING',    (0,0), (-1,-1), 6),
+                ]))
+                story.append(appr_table)
+
+            # ── Footer ──
+            story.append(Spacer(1, 1*cm))
+            story.append(HRFlowable(width="100%", thickness=0.5,
+                                    color=colors.HexColor('#e2e8f0')))
+            story.append(Spacer(1, 0.2*cm))
+            from django.utils import timezone as tz
+            story.append(Paragraph(
+                f"Generated by BookMyLeave on {tz.now().strftime('%d %b %Y %H:%M')}",
+                ParagraphStyle('Footer', parent=styles['Normal'],
+                               fontSize=8, textColor=colors.HexColor('#94a3b8'))
+            ))
+
+            doc.build(story)
+            pdf_bytes = buffer.getvalue()
+            buffer.close()
+
+            response = HttpResponse(pdf_bytes, content_type='application/pdf')
+            response['Content-Disposition'] = (
+                f'attachment; filename="leave_{app.reference_number}.pdf"'
+            )
+            return response
+
+        except Exception as e:
+            import traceback
+            return error(f'PDF generation failed: {str(e)}', status=500)
