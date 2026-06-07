@@ -124,6 +124,7 @@ class LeaveApplicationCreateSerializer(serializers.Serializer):
     hours_requested = serializers.DecimalField(
         max_digits=5, decimal_places=2, required=False, allow_null=True
     )
+    duty_date_for_cd = serializers.DateField(required=False, allow_null=True)
 
     def validate(self, data):
         if data['start_date'] > data['end_date']:
@@ -131,6 +132,9 @@ class LeaveApplicationCreateSerializer(serializers.Serializer):
                 {'end_date': 'End date must be after start date.'}
             )
         return data
+
+    def validate_duty_date_for_cd(self, value):
+        return value
 
 
 class TeamCalendarSerializer(serializers.ModelSerializer):

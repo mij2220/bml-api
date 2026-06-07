@@ -120,7 +120,8 @@ class LeaveApplicationService:
     @transaction.atomic
     def submit_application(employee, leave_type, start_date, end_date,
                            reason, is_half_day=False, half_day_period=None,
-                           hours_requested=None, attachment=None, request=None):
+                           hours_requested=None, duty_date_for_cd=None,
+                           attachment=None, request=None):
         total_days = LeaveApplicationService.validate_application(
             employee, leave_type, start_date, end_date, is_half_day, hours_requested
         )
@@ -135,6 +136,7 @@ class LeaveApplicationService:
             hours_requested=hours_requested,
             total_days=total_days,
             reason=reason,
+            duty_date_for_cd=duty_date_for_cd,
             attachment=attachment,
             status='pending',
             current_approval_level=1,

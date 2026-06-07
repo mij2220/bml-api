@@ -118,6 +118,12 @@ class LeaveApplicationListView(APIView):
         except LeaveType.DoesNotExist:
             return error('Invalid leave type.', status=400)
 
+        # CD leave requires duty_date_for_cd (work date on second rest)
+        if leave_type.code == 'CD' and not d.get('duty_date_for_cd'):
+            return error('Validation failed.',
+                         errors={'duty_date_for_cd': ['Work date on second rest is required for Compensate Leave.']},
+                         status=400)
+
         try:
             from .services import LeaveApplicationService, LeaveValidationError
             application = LeaveApplicationService.submit_application(
@@ -129,6 +135,7 @@ class LeaveApplicationListView(APIView):
                 is_half_day=d.get('is_half_day', False),
                 half_day_period=d.get('half_day_period'),
                 hours_requested=d.get('hours_requested'),
+                duty_date_for_cd=d.get('duty_date_for_cd'),
                 attachment=request.FILES.get('attachment'),
                 request=request,
             )
