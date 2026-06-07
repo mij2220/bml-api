@@ -623,7 +623,7 @@ Generated: {__import__("django.utils.timezone", fromlist=["timezone"]).timezone.
                 ('TOPPADDING',(0,0),(-1,-1),5),
                 ('BOTTOMPADDING',(0,0),(-1,-1),5),
             ]))
-            story.append(pass_header := pass_header and ph_t)
+            story.append(ph_t)
 
             # Pass row 1: Name | P.NO | Dept
             story.append(cell_table([[
