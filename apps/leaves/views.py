@@ -293,7 +293,8 @@ class HolidayCalendarView(APIView):
 class LeavePDFView(APIView):
     """
     GET /api/v1/leaves/<uuid:pk>/pdf/
-    Returns a PDF of the leave application.
+    Returns a PDF matching Engro Fertilizer Limited leave application format.
+    Includes company logo, all fields, and detachable leave pass.
     """
     permission_classes = [IsEmployee]
 
@@ -301,7 +302,7 @@ class LeavePDFView(APIView):
         try:
             app = LeaveApplication.objects.select_related(
                 'employee', 'employee__department', 'employee__designation',
-                'leave_type'
+                'leave_type', 'shift_incharge'
             ).prefetch_related('approvals__approver').get(pk=pk)
         except LeaveApplication.DoesNotExist:
             return error('Application not found.', status=404)
@@ -310,191 +311,379 @@ class LeavePDFView(APIView):
             from io import BytesIO
             from reportlab.lib.pagesizes import A4
             from reportlab.lib import colors
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib.units import cm
+            from reportlab.lib.units import cm, mm
             from reportlab.platypus import (
-                SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+                SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+                HRFlowable, Image, KeepTogether
             )
+            from reportlab.lib.styles import ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
             from django.http import HttpResponse
+            import os as _os
 
             buffer = BytesIO()
             doc = SimpleDocTemplate(
                 buffer, pagesize=A4,
-                leftMargin=2*cm, rightMargin=2*cm,
-                topMargin=2*cm, bottomMargin=2*cm
+                leftMargin=1.5*cm, rightMargin=1.5*cm,
+                topMargin=1.5*cm, bottomMargin=1.5*cm
             )
 
-            styles = getSampleStyleSheet()
-            title_style = ParagraphStyle(
-                'Title', parent=styles['Heading1'],
-                fontSize=18, textColor=colors.HexColor('#1e293b'),
-                spaceAfter=4
-            )
-            subtitle_style = ParagraphStyle(
-                'Subtitle', parent=styles['Normal'],
-                fontSize=10, textColor=colors.HexColor('#64748b'),
-                spaceAfter=12
-            )
-            label_style = ParagraphStyle(
-                'Label', parent=styles['Normal'],
-                fontSize=9, textColor=colors.HexColor('#64748b'),
-                spaceBefore=2
-            )
-            value_style = ParagraphStyle(
-                'Value', parent=styles['Normal'],
-                fontSize=11, textColor=colors.HexColor('#1e293b'),
-                spaceAfter=8
-            )
-            section_style = ParagraphStyle(
-                'Section', parent=styles['Heading2'],
-                fontSize=11, textColor=colors.HexColor('#0f172a'),
-                spaceBefore=14, spaceAfter=6,
-                borderPad=4
-            )
+            W = A4[0] - 3*cm  # usable width
+
+            # ── Colors ──
+            BLACK   = colors.HexColor('#000000')
+            DKGRAY  = colors.HexColor('#1e293b')
+            MDGRAY  = colors.HexColor('#64748b')
+            LGRAY   = colors.HexColor('#f1f5f9')
+            WHITE   = colors.white
+            GREEN   = colors.HexColor('#16a34a')
+            RED     = colors.HexColor('#dc2626')
+            AMBER   = colors.HexColor('#d97706')
+            BORDER  = colors.HexColor('#cbd5e1')
+
+            def style(sz=9, bold=False, color=BLACK, align=TA_LEFT, top=0, bot=0):
+                return ParagraphStyle(
+                    's', fontSize=sz, leading=sz+2,
+                    fontName='Helvetica-Bold' if bold else 'Helvetica',
+                    textColor=color, alignment=align,
+                    spaceBefore=top, spaceAfter=bot
+                )
+
+            def P(txt, sz=9, bold=False, color=BLACK, align=TA_LEFT):
+                return Paragraph(str(txt) if txt else '—', style(sz, bold, color, align))
+
+            def cell_table(data, col_widths, row_heights=None, style_cmds=None):
+                t = Table(data, colWidths=col_widths, rowHeights=row_heights)
+                base = [
+                    ('BOX',      (0,0), (-1,-1), 0.5, BORDER),
+                    ('INNERGRID',(0,0), (-1,-1), 0.3, BORDER),
+                    ('VALIGN',   (0,0), (-1,-1), 'MIDDLE'),
+                    ('LEFTPADDING', (0,0),(-1,-1), 4),
+                    ('RIGHTPADDING',(0,0),(-1,-1), 4),
+                    ('TOPPADDING',  (0,0),(-1,-1), 3),
+                    ('BOTTOMPADDING',(0,0),(-1,-1), 3),
+                ]
+                if style_cmds:
+                    base.extend(style_cmds)
+                t.setStyle(TableStyle(base))
+                return t
+
+            def checkbox(checked=False):
+                return '■' if checked else '□'
+
+            # ── Helper: get approval data ──
+            approvals = list(app.approvals.all())
+            supervisor_approval = next((a for a in approvals if a.level == 1), None)
+            sic_approval = next((a for a in approvals if a.level == 2), None)
+
+            supervisor_name = '—'
+            supervisor_date = ''
+            sic_name = '—'
+            sic_date = ''
+            if supervisor_approval and supervisor_approval.approver:
+                supervisor_name = supervisor_approval.approver.full_name
+                if supervisor_approval.acted_at:
+                    supervisor_date = supervisor_approval.acted_at.strftime('%d %b %Y')
+            if sic_approval and sic_approval.approver:
+                sic_name = sic_approval.approver.full_name
+                if sic_approval.acted_at:
+                    sic_date = sic_approval.acted_at.strftime('%d %b %Y')
+            elif app.shift_incharge:
+                sic_name = app.shift_incharge.full_name
+
+            is_approved  = app.status == 'approved'
+            is_rejected  = app.status == 'rejected'
+            is_paid      = app.leave_type.is_paid
+            lt_code      = app.leave_type.code.upper()
+
+            # Leave type checkboxes
+            lt_annual   = checkbox(lt_code == 'AL')
+            lt_casual   = checkbox(lt_code == 'CL')
+            lt_sick     = checkbox(lt_code in ('SL','SWOM'))
+            lt_shopping = checkbox(lt_code == 'SHL')
+            lt_cdbd     = checkbox(lt_code in ('CD','BD'))
 
             story = []
 
-            # ── Header ──
-            story.append(Paragraph("BookMyLeave", title_style))
-            story.append(Paragraph("Leave Application", subtitle_style))
-            story.append(HRFlowable(width="100%", thickness=1,
-                                    color=colors.HexColor('#e2e8f0')))
-            story.append(Spacer(1, 0.4*cm))
+            # ══════════════════════════════════════════════════════
+            # HEADER: Logo + Company Name
+            # ══════════════════════════════════════════════════════
+            logo_path = _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)),
+                'assets', 'company_logo.png'
+            )
+            if _os.path.exists(logo_path):
+                logo = Image(logo_path, width=4*cm, height=1.4*cm)
+            else:
+                logo = P('[LOGO]', 10)
 
-            # ── Reference + Status ──
-            status_colors = {
-                'pending':   '#f59e0b',
-                'approved':  '#10b981',
-                'rejected':  '#ef4444',
-                'cancelled': '#94a3b8',
-            }
-            sc = status_colors.get(app.status, '#94a3b8')
-
-            ref_data = [
-                ['Reference Number', app.reference_number,
-                 'Status', app.status.upper()],
-            ]
-            ref_table = Table(ref_data, colWidths=[4*cm, 7*cm, 3*cm, 3*cm])
-            ref_table.setStyle(TableStyle([
-                ('FONTNAME',    (0,0), (-1,-1), 'Helvetica'),
-                ('FONTSIZE',    (0,0), (-1,-1), 10),
-                ('TEXTCOLOR',   (0,0), (0,0),  colors.HexColor('#64748b')),
-                ('TEXTCOLOR',   (2,0), (2,0),  colors.HexColor('#64748b')),
-                ('TEXTCOLOR',   (1,0), (1,0),  colors.HexColor('#1e293b')),
-                ('TEXTCOLOR',   (3,0), (3,0),  colors.HexColor(sc)),
-                ('FONTNAME',    (1,0), (1,0),  'Helvetica-Bold'),
-                ('FONTNAME',    (3,0), (3,0),  'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            header_data = [[
+                logo,
+                [
+                    P('ENGRO FERTILIZER LIMITED DAHARKI', 13, bold=True, align=TA_CENTER),
+                    P('APPLICATION FOR LEAVE', 11, bold=True, color=DKGRAY, align=TA_CENTER),
+                ],
+                P(f'Ref: {app.reference_number}', 8, color=MDGRAY, align=TA_RIGHT),
+            ]]
+            header_t = Table(header_data, colWidths=[4.5*cm, W-9*cm, 4.5*cm])
+            header_t.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('BOX', (0,0), (-1,-1), 0.5, BORDER),
+                ('BACKGROUND', (0,0), (-1,-1), LGRAY),
+                ('LEFTPADDING', (0,0), (-1,-1), 6),
+                ('TOPPADDING', (0,0), (-1,-1), 6),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 6),
             ]))
-            story.append(ref_table)
-            story.append(HRFlowable(width="100%", thickness=0.5,
-                                    color=colors.HexColor('#e2e8f0')))
-            story.append(Spacer(1, 0.3*cm))
+            story.append(header_t)
+            story.append(Spacer(1, 3*mm))
 
-            # ── Employee Details ──
-            story.append(Paragraph("Employee Details", section_style))
+            # ══════════════════════════════════════════════════════
+            # ROW 1: Name | P.No | Employee A/C Code
+            # ══════════════════════════════════════════════════════
             emp = app.employee
-            emp_data = [
-                ['Full Name',   emp.full_name,
-                 'Employee ID', emp.employee_id],
-                ['Department',  emp.department.name if emp.department else '-',
-                 'Designation', emp.designation.name if emp.designation else '-'],
+            accode = getattr(emp, 'payroll_code', None) or emp.employee_id
+            row1 = [[
+                [P('NAME:', 7, color=MDGRAY), P(emp.full_name, 10, bold=True)],
+                [P('P.NO.:', 7, color=MDGRAY), P(emp.employee_id, 10, bold=True)],
+                [P('EMPLOYEE A/C CODE:', 7, color=MDGRAY), P(accode, 10, bold=True)],
+            ]]
+            story.append(cell_table(row1, [W*0.45, W*0.25, W*0.30]))
+
+            # ROW 2: Position | Department
+            row2 = [[
+                [P('POSITION:', 7, color=MDGRAY),
+                 P(emp.designation.name if emp.designation else '—', 10, bold=True)],
+                [P('DEPARTMENT:', 7, color=MDGRAY),
+                 P(emp.department.name if emp.department else '—', 10, bold=True)],
+            ]]
+            story.append(cell_table(row2, [W*0.50, W*0.50]))
+
+            # ROW 3: Period of Leave
+            period_data = [[
+                P('PERIOD OF LEAVE', 8, bold=True),
+                P('FOR', 7, color=MDGRAY),
+                P(f'{app.total_days:.0f}', 10, bold=True, align=TA_CENTER),
+                P('DAYS', 7, color=MDGRAY),
+                P('FROM', 7, color=MDGRAY),
+                P(app.start_date.strftime('%d %b %Y'), 10, bold=True),
+                P('TO', 7, color=MDGRAY),
+                P(app.end_date.strftime('%d %b %Y'), 10, bold=True),
+            ]]
+            story.append(cell_table(period_data,
+                [W*0.18, W*0.06, W*0.08, W*0.07, W*0.06, W*0.22, W*0.05, W*0.28]))
+
+            # ROW 4: Leave Type checkboxes
+            type_header = [[
+                P('TYPE OF LEAVE', 7, bold=True),
+                P(f'{lt_annual} ANNUAL', 9, align=TA_CENTER),
+                P(f'{lt_casual} CASUAL', 9, align=TA_CENTER),
+                P(f'{lt_sick} SICK', 9, align=TA_CENTER),
+                P(f'{lt_shopping} SHOPPING', 9, align=TA_CENTER),
+                P(f'{lt_cdbd} CD / BD', 9, align=TA_CENTER),
+            ]]
+            # Applied for / Availed rows
+            applied_days = f'{app.total_days:.0f} days'
+            availed_pay  = applied_days if is_approved and is_paid else ''
+            availed_nopay= applied_days if is_approved and not is_paid else ''
+
+            type_rows = [
+                [P('AND STATUS', 7), P('APPLIED FOR', 7, color=MDGRAY),
+                 P(applied_days, 9, bold=True), '', '', ''],
+                ['', P('AVAILED WITH PAY', 7, color=MDGRAY),
+                 P(availed_pay, 9, bold=True, color=GREEN), '', '', ''],
+                ['', P('AVAILED WITHOUT PAY', 7, color=MDGRAY),
+                 P(availed_nopay, 9, bold=True, color=AMBER), '', '', ''],
             ]
-            emp_table = Table(emp_data, colWidths=[3.5*cm, 8*cm, 3.5*cm, 5*cm])
-            emp_table.setStyle(TableStyle([
-                ('FONTNAME',    (0,0), (-1,-1), 'Helvetica'),
-                ('FONTSIZE',    (0,0), (-1,-1), 10),
-                ('TEXTCOLOR',   (0,0), (0,-1),  colors.HexColor('#64748b')),
-                ('TEXTCOLOR',   (2,0), (2,-1),  colors.HexColor('#64748b')),
-                ('FONTNAME',    (1,0), (1,-1),  'Helvetica-Bold'),
-                ('FONTNAME',    (3,0), (3,-1),  'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+            all_rows = type_header + type_rows
+            ltype_t = Table(all_rows,
+                colWidths=[W*0.15, W*0.20, W*0.15, W*0.15, W*0.17, W*0.18])
+            ltype_t.setStyle(TableStyle([
+                ('BOX',       (0,0),(-1,-1), 0.5, BORDER),
+                ('INNERGRID', (0,0),(-1,-1), 0.3, BORDER),
+                ('VALIGN',    (0,0),(-1,-1), 'MIDDLE'),
+                ('BACKGROUND',(0,0),(-1,0),  LGRAY),
+                ('SPAN',      (2,1),(5,1)),
+                ('SPAN',      (2,2),(5,2)),
+                ('SPAN',      (2,3),(5,3)),
+                ('FONTNAME',  (0,0),(-1,0), 'Helvetica-Bold'),
+                ('LEFTPADDING',(0,0),(-1,-1), 4),
+                ('TOPPADDING',(0,0),(-1,-1), 3),
+                ('BOTTOMPADDING',(0,0),(-1,-1), 3),
             ]))
-            story.append(emp_table)
+            story.append(ltype_t)
 
-            # ── Leave Details ──
-            story.append(Paragraph("Leave Details", section_style))
-            leave_data = [
-                ['Leave Type',    app.leave_type.name,
-                 'Total Days',    str(app.total_days)],
-                ['Start Date',    str(app.start_date),
-                 'End Date',      str(app.end_date)],
-                ['Applied On',    app.applied_at.strftime('%d %b %Y'),
-                 'Half Day',      'Yes' if app.is_half_day else 'No'],
-            ]
-            if app.duty_date_for_cd:
-                leave_data.append([
-                    'Duty Date (CD)', str(app.duty_date_for_cd), '', ''
-                ])
-            leave_table = Table(leave_data, colWidths=[3.5*cm, 8*cm, 3.5*cm, 5*cm])
-            leave_table.setStyle(TableStyle([
-                ('FONTNAME',    (0,0), (-1,-1), 'Helvetica'),
-                ('FONTSIZE',    (0,0), (-1,-1), 10),
-                ('TEXTCOLOR',   (0,0), (0,-1),  colors.HexColor('#64748b')),
-                ('TEXTCOLOR',   (2,0), (2,-1),  colors.HexColor('#64748b')),
-                ('FONTNAME',    (1,0), (1,-1),  'Helvetica-Bold'),
-                ('FONTNAME',    (3,0), (3,-1),  'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-            ]))
-            story.append(leave_table)
-
-            # ── Reason ──
-            story.append(Spacer(1, 0.2*cm))
-            story.append(Paragraph("Reason", label_style))
-            story.append(Paragraph(app.reason or '-', value_style))
-
-            # ── Approval History ──
-            approvals = app.approvals.all()
-            if approvals:
-                story.append(Paragraph("Approval History", section_style))
-                appr_data = [['Level', 'Approver', 'Action', 'Date', 'Comment']]
-                for a in approvals:
-                    appr_data.append([
-                        f"Level {a.level}",
-                        a.approver.full_name,
-                        a.action.upper(),
-                        a.actioned_at.strftime('%d %b %Y'),
-                        (a.comment or '-')[:40],
-                    ])
-                appr_table = Table(appr_data,
-                                   colWidths=[2*cm, 4.5*cm, 3*cm, 3.5*cm, 7*cm])
-                appr_table.setStyle(TableStyle([
-                    ('BACKGROUND',  (0,0), (-1,0),  colors.HexColor('#f1f5f9')),
-                    ('FONTNAME',    (0,0), (-1,0),  'Helvetica-Bold'),
-                    ('FONTNAME',    (0,1), (-1,-1), 'Helvetica'),
-                    ('FONTSIZE',    (0,0), (-1,-1), 9),
-                    ('TEXTCOLOR',   (0,0), (-1,-1), colors.HexColor('#1e293b')),
-                    ('ROWBACKGROUNDS', (0,1), (-1,-1),
-                     [colors.white, colors.HexColor('#f8fafc')]),
-                    ('GRID',        (0,0), (-1,-1), 0.5,
-                     colors.HexColor('#e2e8f0')),
-                    ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-                    ('TOPPADDING',    (0,0), (-1,-1), 6),
-                ]))
-                story.append(appr_table)
-
-            # ── Footer ──
-            story.append(Spacer(1, 1*cm))
-            story.append(HRFlowable(width="100%", thickness=0.5,
-                                    color=colors.HexColor('#e2e8f0')))
-            story.append(Spacer(1, 0.2*cm))
-            from django.utils import timezone as tz
-            story.append(Paragraph(
-                f"Generated by BookMyLeave on {tz.now().strftime('%d %b %Y %H:%M')}",
-                ParagraphStyle('Footer', parent=styles['Normal'],
-                               fontSize=8, textColor=colors.HexColor('#94a3b8'))
+            # ROW 5: Reason of Leave
+            story.append(cell_table(
+                [[P('REASON OF LEAVE:', 7, color=MDGRAY, bold=True),
+                  P(app.reason or '—', 9)]],
+                [W*0.22, W*0.78]
             ))
 
+            # ROW 6: Address | Telephone | Supporting Docs
+            row6 = [[
+                [P('ADDRESS DURING LEAVE:', 7, color=MDGRAY),
+                 P(app.address_during_leave or '—', 9)],
+                [P('TELEPHONE NO.:', 7, color=MDGRAY),
+                 P(app.phone_during_leave or '—', 9)],
+                [P('SUPPORTING DOCUMENTS:', 7, color=MDGRAY),
+                 P('Attached' if app.attachment else 'None', 9)],
+            ]]
+            story.append(cell_table(row6, [W*0.40, W*0.25, W*0.35]))
+
+            # ROW 7: Date of Application | Time of Submission | Signature
+            applied_str = app.applied_at.strftime('%d %b %Y') if app.applied_at else '—'
+            time_str    = app.applied_at.strftime('%I:%M %p') if app.applied_at else '—'
+            row7 = [[
+                [P('DATE OF APPLICATION:', 7, color=MDGRAY), P(applied_str, 10, bold=True)],
+                [P('TIME OF SUBMISSION:', 7, color=MDGRAY),  P(time_str, 10, bold=True)],
+                [P('SIGNATURE OF EMPLOYEE:', 7, color=MDGRAY), P('_________________', 9)],
+            ]]
+            story.append(cell_table(row7, [W*0.30, W*0.25, W*0.45]))
+
+            # ROW 8: Approved / Not Approved
+            ap_box  = checkbox(is_approved)
+            nap_box = checkbox(is_rejected)
+            wp_box  = checkbox(is_approved and is_paid)
+            nwp_box = checkbox(is_approved and not is_paid)
+
+            status_color = GREEN if is_approved else (RED if is_rejected else AMBER)
+            status_text  = app.status.upper()
+
+            rejection_reason = ''
+            if is_rejected:
+                rej = next((a for a in approvals if a.status == 'rejected'), None)
+                if rej and rej.comment:
+                    rejection_reason = rej.comment
+
+            row8 = [[
+                [P(f'{nap_box} NOT APPROVED', 9, bold=True, color=RED if is_rejected else BLACK),
+                 P(f'{ap_box} APPROVED', 9, bold=True, color=GREEN if is_approved else BLACK)],
+                [P('STATUS:', 7, color=MDGRAY),
+                 P(status_text, 11, bold=True, color=status_color)],
+                [P(f'{wp_box} WITH PAY', 9),
+                 P(f'{nwp_box} WITHOUT PAY', 9)],
+            ]]
+            story.append(cell_table(row8, [W*0.28, W*0.36, W*0.36]))
+
+            # ROW 9: Reason for not approving
+            story.append(cell_table(
+                [[P('REASON FOR NOT APPROVING:', 7, color=MDGRAY, bold=True),
+                  P(rejection_reason or ('N/A' if is_approved else '—'), 9)]],
+                [W*0.28, W*0.72],
+                row_heights=[1.2*cm]
+            ))
+
+            # ROW 10: Leave Noted & Recorded | Supervisor | Approving Authority
+            sup_txt = supervisor_name
+            if supervisor_date:
+                sup_txt += f'
+{supervisor_date}'
+            sic_txt = sic_name
+            if sic_date:
+                sic_txt += f'
+{sic_date}'
+
+            row10 = [[
+                [P('LEAVE NOTED & RECORDED', 7, bold=True),
+                 P('BY ERD □', 9)],
+                [P('SUPERVISOR (Approval 1):', 7, color=MDGRAY),
+                 P(sup_txt, 9, bold=True, color=GREEN if supervisor_approval and supervisor_approval.status=='approved' else BLACK)],
+                [P('APPROVING AUTHORITY (SIC):', 7, color=MDGRAY),
+                 P(sic_txt, 9, bold=True, color=GREEN if sic_approval and sic_approval.status=='approved' else BLACK)],
+            ]]
+            story.append(cell_table(row10, [W*0.25, W*0.375, W*0.375]))
+
+            # ══════════════════════════════════════════════════════
+            # LEAVE PASS (detachable)
+            # ══════════════════════════════════════════════════════
+            story.append(Spacer(1, 4*mm))
+            story.append(HRFlowable(
+                width="100%", thickness=1, color=BORDER,
+                dash=(3,3)
+            ))
+            story.append(Spacer(1, 2*mm))
+            story.append(P('✂  LEAVE PASS (Detach and carry)  ✂', 8,
+                          color=MDGRAY, align=TA_CENTER))
+            story.append(Spacer(1, 2*mm))
+
+            # Pass header
+            pass_header = [[
+                logo if _os.path.exists(logo_path) else P(''),
+                P('LEAVE PASS', 14, bold=True, align=TA_CENTER),
+                P(f'Ref: {app.reference_number}
+Generated: {__import__("django.utils.timezone", fromlist=["timezone"]).timezone.now().strftime("%d %b %Y")}',
+                  7, color=MDGRAY, align=TA_RIGHT),
+            ]]
+            ph_t = Table(pass_header, colWidths=[3.5*cm, W-7.5*cm, 4*cm])
+            ph_t.setStyle(TableStyle([
+                ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+                ('BOX',(0,0),(-1,-1),0.5,BORDER),
+                ('BACKGROUND',(0,0),(-1,-1),LGRAY),
+                ('LEFTPADDING',(0,0),(-1,-1),6),
+                ('TOPPADDING',(0,0),(-1,-1),5),
+                ('BOTTOMPADDING',(0,0),(-1,-1),5),
+            ]))
+            story.append(pass_header := pass_header and ph_t)
+
+            # Pass row 1: Name | P.NO | Dept
+            story.append(cell_table([[
+                [P('NAME:',7,color=MDGRAY), P(emp.full_name,10,bold=True)],
+                [P('P.NO.:',7,color=MDGRAY), P(emp.employee_id,10,bold=True)],
+                [P('DEPT.:',7,color=MDGRAY), P(emp.department.name if emp.department else '—',10,bold=True)],
+            ]], [W*0.45, W*0.25, W*0.30]))
+
+            # Pass row 2: Approved checkbox + leave type checkboxes
+            story.append(cell_table([[
+                [P(f'{ap_box} APPROVED',9,bold=True,color=GREEN if is_approved else BLACK),
+                 P(f'{nap_box} NOT APPROVED',9,bold=True,color=RED if is_rejected else BLACK)],
+                P(f'{lt_annual} ANNUAL',9,align=TA_CENTER),
+                P(f'{lt_casual} CASUAL',9,align=TA_CENTER),
+                P(f'{lt_sick} SICK',9,align=TA_CENTER),
+                P(f'{lt_shopping} SHOPPING',9,align=TA_CENTER),
+                P(f'{lt_cdbd} CD/BD',9,align=TA_CENTER),
+            ]], [W*0.22, W*0.15, W*0.15, W*0.15, W*0.17, W*0.16]))
+
+            # Pass row 3: Period
+            story.append(cell_table([[
+                P('PERIOD:',8,bold=True),
+                P('FOR',7,color=MDGRAY),
+                P(f'{app.total_days:.0f}',10,bold=True,align=TA_CENTER),
+                P('DAYS',7,color=MDGRAY),
+                P('FROM',7,color=MDGRAY),
+                P(app.start_date.strftime('%d %b %Y'),10,bold=True),
+                P('TO',7,color=MDGRAY),
+                P(app.end_date.strftime('%d %b %Y'),10,bold=True),
+            ]], [W*0.12, W*0.06, W*0.08, W*0.07, W*0.06, W*0.24, W*0.05, W*0.32]))
+
+            # Pass row 4: Not approved reason
+            story.append(cell_table([[
+                P('LEAVE NOT APPROVED □',8,bold=True),
+                [P('REASON FOR NOT APPROVING:',7,color=MDGRAY),
+                 P(rejection_reason or '',9)],
+            ]], [W*0.25, W*0.75], row_heights=[1.0*cm]))
+
+            # Pass row 5: Supervisor | SIC | HR/ERD
+            story.append(cell_table([[
+                [P('SUPERVISOR:',7,color=MDGRAY),
+                 P(sup_txt,9,bold=True,
+                   color=GREEN if supervisor_approval and supervisor_approval.status=='approved' else BLACK)],
+                [P('SHIFT INCHARGE (SIC):',7,color=MDGRAY),
+                 P(sic_txt,9,bold=True,
+                   color=GREEN if sic_approval and sic_approval.status=='approved' else BLACK)],
+                [P('HR / ERD:',7,color=MDGRAY), P('_________________',9)],
+            ]], [W*0.34, W*0.34, W*0.32]))
+
+            # ── Build PDF ──
             doc.build(story)
             pdf_bytes = buffer.getvalue()
-            buffer.close()
 
             response = HttpResponse(pdf_bytes, content_type='application/pdf')
             response['Content-Disposition'] = (
-                f'attachment; filename="leave_{app.reference_number}.pdf"'
+                f'attachment; filename="LeavePass_{app.reference_number}.pdf"'
             )
             return response
 
         except Exception as e:
             import traceback
-            return error(f'PDF generation failed: {str(e)}', status=500)
+            return error(f'PDF generation failed: {str(e)}
+{traceback.format_exc()}', status=500)
