@@ -1,44 +1,43 @@
+"""
+Core URL patterns — health check and audit log.
+"""
 from django.urls import path
-from django.http import JsonResponse
-from django.db import connection
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from apps.core.utils import success, error
+from apps.core.permissions import IsHRAdmin
 
-def health_check(request):
-    try:
-        connection.ensure_connection()
-        db_ok = True
-    except Exception:
-        db_ok = False
-    return JsonResponse({'status': 'ok' if db_ok else 'degraded', 'version': '1.0.0'})
 
-urlpatterns = [path('', health_check, name='health-check')]
+class HealthCheckView(APIView):
+    permission_classes = []
+    authentication_classes = []
 
-# Audit log endpoint (appended)
-from django.urls import path as _path
-from rest_framework.views import APIView as _APIView
-from apps.core.permissions import IsHRAdmin as _IsHR
-from apps.core.utils import success as _success, error as _error
+    def get(self, request):
+        return success({'status': 'ok', 'version': '1.0.0'})
 
-class AuditLogView(_APIView):
-    permission_classes = [_IsHR]
+
+class AuditLogView(APIView):
+    permission_classes = [IsHRAdmin]
 
     def get(self, request):
         try:
             from apps.core.models import AuditLog
             qs = AuditLog.objects.select_related('actor').order_by('-created_at')
-            # Filters
             action = request.query_params.get('action')
-            search = request.query_params.get('search')
+            search = request.query_params.get('search', '')
             if action:
                 qs = qs.filter(action=action)
             if search:
+                from django.db.models import Q
                 qs = qs.filter(
-                    target_label__icontains=search
-                ) | qs.filter(actor_name__icontains=search)
-            # Paginate — 50 per page
+                    Q(target_label__icontains=search) |
+                    Q(actor_name__icontains=search) |
+                    Q(target_id__icontains=search)
+                )
             page = int(request.query_params.get('page', 1))
             per_page = 50
             total = qs.count()
-            logs = qs[(page-1)*per_page : page*per_page]
+            logs = qs[(page - 1) * per_page: page * per_page]
             data = [{
                 'id': str(l.id),
                 'action': l.action,
@@ -50,9 +49,13 @@ class AuditLogView(_APIView):
                 'new_value': l.new_value,
                 'created_at': l.created_at.isoformat(),
                 'ip_address': l.ip_address,
-            } for l in logs    path('audit-log/', AuditLogView.as_view(), name='audit-log'),
-]
-            return _success({'results': data, 'count': total, 'page': page, 'per_page': per_page})
+            } for l in logs]
+            return success({'results': data, 'count': total, 'page': page, 'per_page': per_page})
         except Exception as e:
-            return _error(str(e), status=500)
+            return error(str(e), status=500)
 
+
+urlpatterns = [
+    path('health/', HealthCheckView.as_view(), name='health'),
+    path('audit-log/', AuditLogView.as_view(), name='audit-log'),
+]
