@@ -163,3 +163,33 @@ def year_end_processing():
 
     logger.info(f"Year-end processing: {processed} employees processed for {new_year}")
     return {'processed': processed, 'new_year': new_year}
+
+
+@shared_task(name='leaves.expire_overdue_leaves')
+def expire_overdue_leaves():
+    """
+    Runs nightly at midnight.
+    Marks any 'pending' leave application as 'expired' if its
+    start_date has passed without being approved or rejected.
+    This prevents managers from accidentally approving past-date leaves
+    and keeps the pending list clean.
+    """
+    import logging
+    from django.utils import timezone
+    from apps.leaves.models import LeaveApplication
+
+    logger = logging.getLogger(__name__)
+    today = timezone.now().date()
+
+    overdue = LeaveApplication.objects.filter(
+        status='pending',
+        start_date__lt=today,
+    )
+    count = overdue.count()
+    if count:
+        overdue.update(status='expired')
+        logger.info(f"Expired {count} overdue leave applications")
+    else:
+        logger.info("No overdue leave applications to expire")
+
+    return {'expired': count}

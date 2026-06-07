@@ -20,6 +20,7 @@ LEAVE_STATUS_CHOICES = [
     ('approved', 'Approved'),
     ('rejected', 'Rejected'),
     ('cancelled', 'Cancelled'),
+    ('expired', 'Expired'),   # Auto-set by nightly task when leave dates pass without approval
 ]
 
 APPROVAL_ACTION_CHOICES = [
