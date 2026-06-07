@@ -162,7 +162,7 @@ class LeaveApplicationService:
     def submit_application(employee, leave_type, start_date, end_date,
                            reason, is_half_day=False, half_day_period=None,
                            hours_requested=None, duty_date_for_cd=None,
-                           doctor_approval=False, attachment=None, request=None):
+                           doctor_approval=False, shift_incharge_id=None, attachment=None, request=None):
         total_days = LeaveApplicationService.validate_application(
             employee, leave_type, start_date, end_date, is_half_day, hours_requested,
             doctor_approval=doctor_approval
@@ -179,6 +179,7 @@ class LeaveApplicationService:
             total_days=total_days,
             reason=reason,
             duty_date_for_cd=duty_date_for_cd,
+            shift_incharge_id=shift_incharge_id,
             attachment=attachment,
             status='pending',
             current_approval_level=1,

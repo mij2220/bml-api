@@ -22,8 +22,8 @@ from dateutil.relativedelta import relativedelta
 
 JUNIOR_AL = Decimal('21')   # < 5 years
 SENIOR_AL = Decimal('30')   # >= 5 years
-JUNIOR_SPLITS = 5
-SENIOR_SPLITS = 7
+JUNIOR_SPLITS = 6
+SENIOR_SPLITS = 8
 EXPERIENCE_THRESHOLD_YEARS = 5
 
 

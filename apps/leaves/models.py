@@ -157,6 +157,11 @@ class LeaveApplication(BaseModel):
     attachment = models.FileField(
         upload_to='leave_attachments/', null=True, blank=True
     )
+    shift_incharge = models.ForeignKey(
+        'employees.Employee', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='sic_leaves',
+        help_text='Shift Incharge selected by employee at apply time for Level-2 approval'
+    )
     status = models.CharField(
         max_length=20, choices=LEAVE_STATUS_CHOICES, default='pending', db_index=True
     )
