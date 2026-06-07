@@ -73,6 +73,16 @@ class LeaveApplicationListView(APIView):
         qs = LeaveApplication.objects.select_related(
             'employee', 'employee__department', 'leave_type'
         ).prefetch_related('approvals__approver')
+
+        # ?mine=true always returns only the logged-in employee's own leaves
+        # Used by My Leaves page so managers/HR see their own leaves, not team's
+        mine_only = request.query_params.get('mine', '').lower() == 'true'
+        if mine_only:
+            try:
+                return qs.filter(employee=user.employee_profile)
+            except Exception:
+                return qs.none()
+
         if user.is_hr_admin:
             return qs
         if user.is_manager_role:
