@@ -576,12 +576,10 @@ class LeavePDFView(APIView):
             # ROW 10: Leave Noted & Recorded | Supervisor | Approving Authority
             sup_txt = supervisor_name
             if supervisor_date:
-                sup_txt += f'
-{supervisor_date}'
+                sup_txt = sup_txt + ' / ' + supervisor_date
             sic_txt = sic_name
             if sic_date:
-                sic_txt += f'
-{sic_date}'
+                sic_txt = sic_txt + ' / ' + sic_date
 
             row10 = [[
                 [P('LEAVE NOTED & RECORDED', 7, bold=True),
