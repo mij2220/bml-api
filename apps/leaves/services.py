@@ -8,7 +8,7 @@ from decimal import Decimal
 from django.utils import timezone
 from django.db import transaction
 
-from apps.core.utils import calculate_working_days
+from apps.core.utils import calculate_working_days, calculate_calendar_days
 from .models import (
     LeaveApplication, LeaveApproval, LeaveBalance, LeaveType,
 )
@@ -73,7 +73,7 @@ class LeaveApplicationService:
         elif hours_requested:
             total_days = Decimal(str(hours_requested)) / Decimal('8')
         else:
-            total_days = Decimal(str(calculate_working_days(start_date, end_date, employee)))
+            total_days = Decimal(str(calculate_calendar_days(start_date, end_date)))  # All days count (incl. Sat/Sun) per client requirement
 
         if total_days <= 0:
             raise LeaveValidationError('No working days in the selected range.', 'start_date')

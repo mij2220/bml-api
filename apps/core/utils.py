@@ -57,3 +57,14 @@ def get_week_bounds(d: date):
 
 def current_year():
     return timezone.now().year
+
+
+def calculate_calendar_days(start_date, end_date):
+    """
+    Returns total calendar days between start_date and end_date (inclusive).
+    Per client requirement: ALL days (including Sat/Sun) count as leave days.
+    """
+    from datetime import timedelta
+    if end_date < start_date:
+        return 0
+    return (end_date - start_date).days + 1
