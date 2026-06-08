@@ -108,35 +108,6 @@ class LeaveApplicationService:
                     pass  # no balance record but doctor approved
                 else:
                     raise LeaveValidationError('No leave balance found for this leave type.', 'leave_type')
-
-        # Rule 8b — SL + SWOM SHARED POOL: combined usage must not exceed 16 days
-        # Confirmed by client June 8 2026: SL and SWOM draw from ONE shared 16-day quota.
-        # Individual balances are tracked separately but total used (SL.used + SWOM.used) ≤ 16.
-        # doctor_approval bypasses this combined check too (same as individual SL bypass).
-        if leave_type.code in ('SL', 'SWOM') and not doctor_approval:
-            try:
-                sl_type   = LeaveType.objects.get(code='SL',   is_active=True)
-                swom_type = LeaveType.objects.get(code='SWOM', is_active=True)
-                sl_balance   = LeaveBalance.objects.filter(employee=employee, leave_type=sl_type,   year=year).first()
-                swom_balance = LeaveBalance.objects.filter(employee=employee, leave_type=swom_type, year=year).first()
-                sl_used   = sl_balance.used   if sl_balance   else Decimal('0')
-                swom_used = swom_balance.used if swom_balance else Decimal('0')
-                combined_used = sl_used + swom_used
-                SHARED_POOL = Decimal('16')
-                if combined_used + total_days > SHARED_POOL:
-                    remaining_pool = max(SHARED_POOL - combined_used, Decimal('0'))
-                    raise LeaveValidationError(
-                        f'SL and SWOM share a combined quota of 16 days. '
-                        f'Already used: {float(combined_used):.1f} days '
-                        f'(SL: {float(sl_used):.1f}, SWOM: {float(swom_used):.1f}). '
-                        f'Remaining in shared pool: {float(remaining_pool):.1f} days. '
-                        f'Requested: {float(total_days):.1f} days.',
-                        'leave_type',
-                    )
-            except LeaveValidationError:
-                raise
-            except Exception:
-                pass  # If types missing, skip combined check gracefully
         # Unpaid leave (is_paid=False): no balance check — always allowed
 
         # Rule 9 — overlap check
@@ -424,8 +395,8 @@ class LeaveApplicationService:
                     year=year,
                 )
                 balance.used = max(balance.used - application.total_days, 0)
-                # Restore split count for AL, SL, and SWOM
-                if application.leave_type.code in ('AL', 'SL', 'SWOM') and balance.splits_used > 0:
+                # Restore split count for AL and SL
+                if application.leave_type.code in ('AL', 'SL') and balance.splits_used > 0:
                     balance.splits_used = balance.splits_used - 1
                 balance.save(update_fields=['used', 'splits_used'])
             except LeaveBalance.DoesNotExist:
@@ -434,13 +405,6 @@ class LeaveApplicationService:
             # Reset employee status
             application.employee.status = 'active'
             application.employee.save(update_fields=['status'])
-
-        # Notify employee their leave was cancelled
-        try:
-            from apps.notifications.services import NotificationService
-            NotificationService.notify_leave_cancelled(application, request)
-        except Exception:
-            pass  # Notifications are non-critical
 
         from apps.core.utils import log_action
         log_action(request, 'leave.cancelled', 'LeaveApplication', application.id)
