@@ -22,7 +22,7 @@ class AuditLogView(APIView):
     def get(self, request):
         try:
             from apps.core.models import AuditLog
-            qs = AuditLog.objects.order_by('-created_at')
+            qs = AuditLog.objects.select_related('actor').order_by('-created_at')
             action = request.query_params.get('action')
             search = request.query_params.get('search', '')
             if action:
