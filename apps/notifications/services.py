@@ -104,3 +104,27 @@ class NotificationService:
     @staticmethod
     def notify_balance_expiry(employee, leave_type, expiring_days):
         pass
+
+    @staticmethod
+    def notify_leave_cancelled(application, request=None):
+        """Notify the employee when their leave is cancelled by manager/HR."""
+        try:
+            from apps.notifications.models import Notification
+            cancelled_by_other = False
+            if request and request.user and hasattr(application.employee, 'user'):
+                cancelled_by_other = (request.user != application.employee.user)
+            if cancelled_by_other:
+                Notification.objects.create(
+                    recipient=application.employee,
+                    type='leave_cancelled',
+                    title=f'Leave Cancelled — {application.reference_number}',
+                    body=(
+                        f'Your {application.leave_type.name} '
+                        f'({application.start_date} -> {application.end_date}, '
+                        f'{application.total_days}d) has been cancelled by your manager/HR.'
+                    ),
+                    action_url='/my-leaves',
+                )
+        except Exception:
+            pass
+
