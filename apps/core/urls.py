@@ -31,7 +31,7 @@ class AuditLogView(APIView):
                 from django.db.models import Q
                 qs = qs.filter(
                     Q(target_label__icontains=search) |
-                    Q(actor_name__icontains=search) |
+                    Q(action__icontains=search) |
                     Q(target_id__icontains=search)
                 )
             page = int(request.query_params.get('page', 1))
@@ -41,7 +41,7 @@ class AuditLogView(APIView):
             data = [{
                 'id': str(l.id),
                 'action': l.action,
-                'actor_name': l.actor_name,
+                'actor_name': (l.user.email if l.user else 'system'),
                 'target_type': l.target_type,
                 'target_id': l.target_id,
                 'target_label': l.target_label,
