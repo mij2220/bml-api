@@ -39,11 +39,7 @@ class LeaveApplicationService:
         if start_date > end_date:
             raise LeaveValidationError('End date must be after start date.', 'end_date')
 
-        # Rule 2 — backdate check (CD is always exempt — it's taken after the rest day)
-        if start_date < today and not leave_type.allow_backdate and leave_type.code != 'CD':
-            raise LeaveValidationError(
-                'Backdated leave is not allowed for this leave type.', 'start_date'
-            )
+        # Rule 2 — backdate check disabled (client allows backdated leaves for all types)
 
         # Rule 3 — minimum notice days
         if not skip_notice:
