@@ -168,6 +168,12 @@ class LeaveApplicationService:
             doctor_approval=doctor_approval
         )
 
+        # Phase 2: Auto-assign L2 approver from employee.shift_incharge
+        # If shift_incharge_id passed manually (legacy), use it; otherwise use employee's assigned shift_incharge
+        resolved_sic_id = shift_incharge_id
+        if not resolved_sic_id and hasattr(employee, 'shift_incharge') and employee.shift_incharge:
+            resolved_sic_id = employee.shift_incharge.id
+
         application = LeaveApplication.objects.create(
             employee=employee,
             leave_type=leave_type,
@@ -179,7 +185,7 @@ class LeaveApplicationService:
             total_days=total_days,
             reason=reason,
             duty_date_for_cd=duty_date_for_cd,
-            shift_incharge_id=shift_incharge_id,
+            shift_incharge_id=resolved_sic_id,
             attachment=attachment,
             status='pending',
             current_approval_level=1,
