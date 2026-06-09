@@ -68,7 +68,7 @@ class LeaveApplicationListSerializer(serializers.ModelSerializer):
             'department', 'leave_type_name', 'leave_type_code', 'leave_type_color',
             'start_date', 'end_date', 'total_days', 'status',
             'is_half_day', 'applied_at', 'current_approval_level',
-            'replacement_employee',
+            'replacement_employee', 'duty_date_for_cd',
         ]
 
 
