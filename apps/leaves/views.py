@@ -411,7 +411,7 @@ class LeavePDFView(APIView):
             lt_annual   = checkbox(lt_code == 'AL')
             lt_casual   = checkbox(lt_code == 'CL')
             lt_sick     = checkbox(lt_code in ('SL','SWOM'))
-            lt_shopping = checkbox(lt_code == 'SHL')
+            lt_unpaid   = checkbox(lt_code == 'UL')
             lt_cdbd     = checkbox(lt_code in ('CD','BD'))
 
             story = []
@@ -455,7 +455,7 @@ class LeavePDFView(APIView):
             accode = getattr(emp, 'payroll_code', None) or emp.employee_id
             row1 = [[
                 [P('NAME:', 7, color=MDGRAY), P(emp.full_name, 10, bold=True)],
-                [P('P.NO.:', 7, color=MDGRAY), P(emp.employee_id, 10, bold=True)],
+                [P('P.NO.:', 7, color=MDGRAY), P(getattr(emp, 'p_number', None) or emp.employee_id, 10, bold=True)],
                 [P('EMPLOYEE A/C CODE:', 7, color=MDGRAY), P(accode, 10, bold=True)],
             ]]
             story.append(cell_table(row1, [W*0.45, W*0.25, W*0.30]))
@@ -494,7 +494,7 @@ class LeavePDFView(APIView):
                 P(f'{lt_annual} ANNUAL', 9, align=TA_CENTER),
                 P(f'{lt_casual} CASUAL', 9, align=TA_CENTER),
                 P(f'{lt_sick} SICK', 9, align=TA_CENTER),
-                P(f'{lt_shopping} SHOPPING', 9, align=TA_CENTER),
+                P(f'{lt_unpaid} UNPAID', 9, align=TA_CENTER),
                 P(f'{lt_cdbd} CD / BD', 9, align=TA_CENTER),
             ]]
             # Applied for / Availed rows
@@ -641,7 +641,7 @@ class LeavePDFView(APIView):
             # Pass row 1: Name | P.NO | Dept
             story.append(cell_table([[
                 [P('NAME:',7,color=MDGRAY), P(emp.full_name,10,bold=True)],
-                [P('P.NO.:',7,color=MDGRAY), P(emp.employee_id,10,bold=True)],
+                [P('P.NO.:',7,color=MDGRAY), P(getattr(emp, 'p_number', None) or emp.employee_id,10,bold=True)],
                 [P('DEPT.:',7,color=MDGRAY), P(emp.department.name if emp.department else '—',10,bold=True)],
             ]], [W*0.45, W*0.25, W*0.30]))
 
@@ -652,7 +652,7 @@ class LeavePDFView(APIView):
                 P(f'{lt_annual} ANNUAL',9,align=TA_CENTER),
                 P(f'{lt_casual} CASUAL',9,align=TA_CENTER),
                 P(f'{lt_sick} SICK',9,align=TA_CENTER),
-                P(f'{lt_shopping} SHOPPING',9,align=TA_CENTER),
+                P(f'{lt_unpaid} UNPAID',9,align=TA_CENTER),
                 P(f'{lt_cdbd} CD/BD',9,align=TA_CENTER),
             ]], [W*0.22, W*0.15, W*0.15, W*0.15, W*0.17, W*0.16]))
 
