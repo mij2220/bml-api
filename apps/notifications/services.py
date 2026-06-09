@@ -71,7 +71,25 @@ class NotificationService:
 
     @staticmethod
     def notify_next_approver(application):
-        pass
+        try:
+            level = application.current_approval_level
+            emp = application.employee
+            # Level 2 approver = shift_incharge
+            if level == 2:
+                approver = emp.shift_incharge
+            else:
+                approver = emp.reporting_manager
+            if not approver:
+                return
+            title = f"Approval required (Level {level}) — {application.reference_number}"
+            body = (
+                f"{emp.full_name} applied for {application.leave_type.name} "
+                f"from {application.start_date} to {application.end_date} "
+                f"({application.total_days} days). Level {level - 1} approved."
+            )
+            NotificationService.create(approver, "leave_applied", title, body, f"/approvals/{application.id}/")
+        except Exception as e:
+            logger.warning("notify_next_approver failed: %s", e)
 
     @staticmethod
     def notify_delegated(application, delegate_employee):
