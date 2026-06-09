@@ -12,21 +12,29 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return data
 
 class UserMeSerializer(serializers.ModelSerializer):
-    employee_id = serializers.SerializerMethodField()
-    full_name = serializers.SerializerMethodField()
-    department = serializers.SerializerMethodField()
+    employee_id      = serializers.SerializerMethodField()
+    p_number         = serializers.SerializerMethodField()
+    full_name        = serializers.SerializerMethodField()
+    department       = serializers.SerializerMethodField()
+    designation_name = serializers.SerializerMethodField()
     class Meta:
         model = User
-        fields = ['id','email','role','must_change_password','employee_id','full_name','department']
+        fields = ['id','email','role','must_change_password','employee_id','p_number','full_name','department','designation_name']
         read_only_fields = fields
     def get_employee_id(self, obj):
         try: return str(obj.employee_profile.employee_id)
+        except: return None
+    def get_p_number(self, obj):
+        try: return obj.employee_profile.p_number
         except: return None
     def get_full_name(self, obj):
         try: return obj.employee_profile.full_name
         except: return obj.email
     def get_department(self, obj):
         try: return obj.employee_profile.department.name
+        except: return None
+    def get_designation_name(self, obj):
+        try: return obj.employee_profile.designation.name
         except: return None
 
 class ChangePasswordSerializer(serializers.Serializer):
