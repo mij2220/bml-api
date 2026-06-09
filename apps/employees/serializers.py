@@ -73,6 +73,8 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
     branch = BranchSerializer(read_only=True)
     reporting_manager = EmployeeListSerializer(read_only=True)
     reporting_manager_id = serializers.UUIDField(required=False, allow_null=True, write_only=True)
+    shift_incharge = EmployeeListSerializer(read_only=True)
+    shift_incharge_id = serializers.UUIDField(required=False, allow_null=True, write_only=True)
     profile_picture_url  = serializers.SerializerMethodField(read_only=True)
 
     def get_profile_picture_url(self, obj):
@@ -89,7 +91,7 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ['id','employee_id','full_name','email','role','cnic','gender','date_of_birth',
                   'phone','joining_date','experience_start_date','experience_display','experience_years','experience_tier','employment_type','salary_grade', 'account_code','department','designation',
-                  'branch','reporting_manager','reporting_manager_id','status','profile_picture','profile_picture_url','created_at','updated_at']
+                  'branch','reporting_manager','reporting_manager_id','shift_incharge','shift_incharge_id','status','profile_picture','profile_picture_url','created_at','updated_at']
 
     def update(self, instance, validated_data):
         from apps.employees.models import Employee as Emp
