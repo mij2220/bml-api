@@ -56,6 +56,7 @@ class Employee(BaseModel):
     user = models.OneToOneField('accounts.User', on_delete=models.CASCADE,
                                 related_name='employee_profile')
     employee_id = models.CharField(max_length=50, unique=True)
+    p_number    = models.CharField(max_length=20, unique=True, null=True, blank=True, db_index=True)
     full_name = models.CharField(max_length=200)
     cnic = models.CharField(max_length=15, blank=True)
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
