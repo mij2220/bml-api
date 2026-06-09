@@ -183,6 +183,9 @@ class LeaveApplication(BaseModel):
             count = LeaveApplication.objects.filter(
                 applied_at__year=year
             ).count() + 1
+            # Ensure uniqueness by incrementing until we find an unused reference
+            while LeaveApplication.objects.filter(reference_number=f'LV-{year}-{count:04d}').exists():
+                count += 1
             self.reference_number = f'LV-{year}-{count:04d}'
         super().save(*args, **kwargs)
 
