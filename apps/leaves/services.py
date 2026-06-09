@@ -39,8 +39,8 @@ class LeaveApplicationService:
         if start_date > end_date:
             raise LeaveValidationError('End date must be after start date.', 'end_date')
 
-        # Rule 2 — backdate check
-        if start_date < today and not leave_type.allow_backdate:
+        # Rule 2 — backdate check (CD is always exempt — it's taken after the rest day)
+        if start_date < today and not leave_type.allow_backdate and leave_type.code != 'CD':
             raise LeaveValidationError(
                 'Backdated leave is not allowed for this leave type.', 'start_date'
             )
@@ -143,7 +143,7 @@ class LeaveApplicationService:
                     duration=F('total_days')
                 ).filter(total_days__gte=14).exists()
 
-                if not has_long_block and remaining_after < 14:
+                if not has_long_block and remaining_after < 14 and total_days < 14:
                     raise LeaveValidationError(
                         f'You must retain at least 14 days for a consecutive annual leave block. '
                         f'Remaining after this application: {float(remaining_after):.1f} days. '
