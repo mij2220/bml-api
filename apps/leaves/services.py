@@ -41,8 +41,8 @@ class LeaveApplicationService:
 
         # Rule 2 — backdate check disabled (client allows backdated leaves for all types)
 
-        # Rule 3 — minimum notice days
-        if not skip_notice:
+        # Rule 3 — minimum notice days (skip for past/backdated leaves)
+        if not skip_notice and start_date >= today:
             notice = (start_date - today).days
             if notice < leave_type.min_notice_days:
                 raise LeaveValidationError(
