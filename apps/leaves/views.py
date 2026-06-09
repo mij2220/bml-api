@@ -469,7 +469,12 @@ class LeavePDFView(APIView):
             ]]
             story.append(cell_table(row2, [W*0.50, W*0.50]))
 
-            # ROW 3: Period of Leave
+            # ROW 3: Leave Type Name + Period of Leave
+            story.append(cell_table([[
+                P('LEAVE TYPE:', 7, color=MDGRAY, bold=True),
+                P(app.leave_type.name, 11, bold=True),
+            ]], [W*0.18, W*0.82]))
+
             period_data = [[
                 P('PERIOD OF LEAVE', 8, bold=True),
                 P('FOR', 7, color=MDGRAY),
@@ -650,6 +655,12 @@ class LeavePDFView(APIView):
                 P(f'{lt_shopping} SHOPPING',9,align=TA_CENTER),
                 P(f'{lt_cdbd} CD/BD',9,align=TA_CENTER),
             ]], [W*0.22, W*0.15, W*0.15, W*0.15, W*0.17, W*0.16]))
+
+            # Pass row 2b: Leave type name
+            story.append(cell_table([[
+                P('LEAVE TYPE:',7,color=MDGRAY,bold=True),
+                P(app.leave_type.name,11,bold=True),
+            ]], [W*0.22, W*0.78]))
 
             # Pass row 3: Period
             story.append(cell_table([[
