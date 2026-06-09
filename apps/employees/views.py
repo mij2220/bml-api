@@ -232,6 +232,41 @@ class DesignationView(APIView):
         s.save(created_by=request.user)
         return success(s.data, status=201)
 
+
+
+class DesignationDetailView(APIView):
+    permission_classes = [IsEmployee]
+
+    def patch(self, request, pk):
+        if not request.user.is_hr_admin:
+            return error('Permission denied.', status=403)
+        try:
+            desig = Designation.objects.get(pk=pk)
+        except Designation.DoesNotExist:
+            return error('Not found.', status=404)
+        s = DesignationSerializer(desig, data=request.data, partial=True)
+        if not s.is_valid():
+            return error('Validation failed.', errors=s.errors, status=400)
+        s.save()
+        return success(s.data)
+
+    def delete(self, request, pk):
+        if not request.user.is_hr_admin:
+            return error('Permission denied.', status=403)
+        try:
+            desig = Designation.objects.get(pk=pk)
+        except Designation.DoesNotExist:
+            return error('Not found.', status=404)
+        # Block delete if employees assigned
+        emp_count = desig.employees.filter(status__in=['active','on_leave']).count()
+        if emp_count > 0:
+            return error(
+                f'Cannot delete — {emp_count} active employee{"s" if emp_count > 1 else ""} assigned to this designation.',
+                status=400
+            )
+        desig.delete()
+        return success({'deleted': True})
+
 class BranchView(APIView):
     permission_classes = [IsEmployee]
     def get(self, request):

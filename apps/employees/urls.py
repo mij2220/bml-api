@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     MeBalancesView, EmployeeListCreateView, EmployeeDetailView, MeEmployeeView,
     EmployeeBalancesView, EmployeeDocumentView,
-    DepartmentView, DesignationView, BranchView,
+    DepartmentView, DesignationView, DesignationDetailView, BranchView,
     QuotaManagementView,
     TeamBalancesView,
 )
@@ -16,6 +16,7 @@ urlpatterns = [
     path('employees/<uuid:pk>/documents/', EmployeeDocumentView.as_view(), name='employee-documents'),
     path('departments/', DepartmentView.as_view(), name='department-list'),
     path('designations/', DesignationView.as_view(), name='designation-list'),
+    path('designations/<uuid:pk>/', DesignationDetailView.as_view(), name='designation-detail'),
     path('branches/', BranchView.as_view(), name='branch-list'),
     path('quota-management/', QuotaManagementView.as_view(), name='quota-management'),
     path('team-balances/', TeamBalancesView.as_view(), name='team-balances'),
