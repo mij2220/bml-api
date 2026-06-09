@@ -16,7 +16,8 @@ class LeaveTypeListCreateView(APIView):
     permission_classes = [IsEmployee]
 
     def get(self, request):
-        qs = LeaveType.objects.filter(is_active=True)
+        show_inactive = request.query_params.get('show_inactive') == 'true'
+        qs = LeaveType.objects.all() if show_inactive else LeaveType.objects.filter(is_active=True)
         return success(LeaveTypeSerializer(qs, many=True).data)
 
     def post(self, request):
