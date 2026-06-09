@@ -108,7 +108,7 @@ class LeaveApplicationDetailSerializer(serializers.ModelSerializer):
             'leave_type', 'leave_type_name', 'leave_type_color',
             'start_date', 'end_date', 'is_half_day', 'half_day_period',
             'hours_requested', 'total_days', 'reason', 'contact_during_leave', 'address_during_leave', 'duty_date_for_cd',
-            'attachment', 'attachment_url', 'employee_id_code', 'department', 'status', 'applied_at', 'current_approval_level', 'approvals',
+            'attachment', 'attachment_url', 'employee_id_code', 'department', 'status', 'applied_at', 'current_approval_level', 'approvals', 'duty_date_for_cd',
         ]
 
 
