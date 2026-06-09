@@ -76,6 +76,8 @@ class Employee(BaseModel):
     designation = models.ForeignKey(Designation, on_delete=models.PROTECT, related_name='employees')
     reporting_manager = models.ForeignKey('self', null=True, blank=True,
                                           on_delete=models.SET_NULL, related_name='direct_reports')
+    shift_incharge = models.ForeignKey('self', null=True, blank=True,
+                                       on_delete=models.SET_NULL, related_name='shift_incharge_for')
     branch = models.ForeignKey(Branch, null=True, blank=True,
                                on_delete=models.SET_NULL, related_name='employees')
     status = models.CharField(max_length=20, choices=EMPLOYEE_STATUS_CHOICES,
