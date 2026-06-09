@@ -36,7 +36,7 @@ class EmployeeListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Employee
-        fields = ['id','employee_id','full_name','email','role','department_name',
+        fields = ['id','employee_id','p_number','full_name','email','role','department_name',
                   'designation_name','manager_name','reporting_manager_id', 'shift_incharge_id',
                   'status','employment_type','profile_picture']
 
@@ -89,7 +89,7 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
         return None
     class Meta:
         model = Employee
-        fields = ['id','employee_id','full_name','email','role','cnic','gender','date_of_birth',
+        fields = ['id','employee_id','p_number','full_name','email','role','cnic','gender','date_of_birth',
                   'phone','joining_date','experience_start_date','experience_display','experience_years','experience_tier','employment_type','salary_grade', 'account_code','department','designation',
                   'branch','reporting_manager','reporting_manager_id','shift_incharge','shift_incharge_id','status','profile_picture','profile_picture_url','created_at','updated_at']
 
@@ -156,7 +156,7 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
     reporting_manager_id = serializers.UUIDField(required=False, allow_null=True)
     class Meta:
         model = Employee
-        fields = ['employee_id','full_name','email','password','role','cnic','gender',
+        fields = ['employee_id','p_number','full_name','email','password','role','cnic','gender',
                   'date_of_birth','phone','joining_date','experience_start_date','employment_type','salary_grade',
                   'department_id','designation_id','branch_id','reporting_manager_id']
     def validate_email(self, value):
