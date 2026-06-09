@@ -254,11 +254,17 @@ class PendingApprovalsView(APIView):
             emp = request.user.employee_profile
         except Exception:
             return error('No employee profile.', status=400)
-        team_ids = list(emp.direct_reports.values_list('id', flat=True))
+        # L1 manager sees leaves at approval level 1 (their direct reports)
+        l1_ids = list(emp.direct_reports.values_list('id', flat=True))
+        # L2 manager sees leaves at approval level 2 (employees they are shift_incharge for)
+        l2_ids = list(emp.shift_incharge_for.values_list('id', flat=True))
+
+        from django.db.models import Q
         apps = LeaveApplication.objects.filter(
             status='pending',
-            employee_id__in=team_ids,
-            current_approval_level=1,
+        ).filter(
+            Q(employee_id__in=l1_ids, current_approval_level=1) |
+            Q(employee_id__in=l2_ids, current_approval_level=2)
         ).select_related('employee', 'leave_type').order_by('applied_at')
         return success(LeaveApplicationListSerializer(apps, many=True).data)
 
