@@ -493,7 +493,7 @@ def get_team_calendar(manager_employee, month_str):
 
     return LeaveApplication.objects.filter(
         employee_id__in=team_ids,
-        status__in=['approved', 'pending'],
+        status='approved',
         start_date__lte=end,
         end_date__gte=start,
     ).select_related('employee', 'leave_type').order_by('start_date')
