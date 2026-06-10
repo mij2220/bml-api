@@ -11,6 +11,7 @@ class EmployeeListCreateView(APIView):
     permission_classes = [IsEmployee]
     parser_classes = [JSONParser, MultiPartParser, FormParser]
     def get_queryset(self, request):
+        _sync_employee_statuses()
         user = request.user
         qs = Employee.objects.select_related('user','department','designation','branch','reporting_manager')
         if user.is_hr_admin:
@@ -394,6 +395,29 @@ class QuotaManagementView(APIView):
             'results': results,
         })
 
+
+def _sync_employee_statuses():
+    """Fast daily sync — runs at most once per day using cache."""
+    from django.core.cache import cache
+    from django.utils import timezone
+    from apps.leaves.models import LeaveApplication
+    if cache.get('status_synced_today'):
+        return
+    today = timezone.now().date()
+    for app in LeaveApplication.objects.filter(
+        status='approved', start_date__lte=today, end_date__gte=today
+    ).select_related('employee'):
+        if app.employee.status != 'on_leave':
+            app.employee.status = 'on_leave'
+            app.employee.save(update_fields=['status'])
+    for emp in Employee.objects.filter(status='on_leave'):
+        if not LeaveApplication.objects.filter(
+            employee=emp, status='approved',
+            start_date__lte=today, end_date__gte=today
+        ).exists():
+            emp.status = 'active'
+            emp.save(update_fields=['status'])
+    cache.set('status_synced_today', True, 86400)
 
 class TeamBalancesView(APIView):
     """
