@@ -578,7 +578,7 @@ class LeavePDFView(APIView):
 
             rejection_reason = ''
             if is_rejected:
-                rej = next((a for a in approvals if a.status == 'rejected'), None)
+                rej = next((a for a in approvals if a.action == 'rejected'), None)
                 if rej and rej.comment:
                     rejection_reason = rej.comment
 
