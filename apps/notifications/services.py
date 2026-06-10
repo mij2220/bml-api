@@ -36,16 +36,18 @@ class NotificationService:
     @staticmethod
     def notify_leave_applied(application):
         try:
-            manager = application.employee.reporting_manager
-            if not manager:
-                return
-            title = f"Leave request from {application.employee.full_name}"
+            emp = application.employee
+            title = f"Leave request from {emp.full_name}"
             body = (
-                f"{application.employee.full_name} applied for "
+                f"{emp.full_name} applied for "
                 f"{application.leave_type.name} from {application.start_date} "
                 f"to {application.end_date} ({application.total_days} days)."
             )
-            NotificationService.create(manager, "leave_applied", title, body, f"/approvals/{application.id}/")
+            url = f"/approvals/{application.id}/"
+            if emp.reporting_manager:
+                NotificationService.create(emp.reporting_manager, "leave_applied", title, body, url)
+            if emp.shift_incharge and emp.shift_incharge != emp.reporting_manager:
+                NotificationService.create(emp.shift_incharge, "leave_applied", title, body, url)
         except Exception as e:
             logger.warning("notify_leave_applied failed: %s", e)
 
@@ -71,25 +73,7 @@ class NotificationService:
 
     @staticmethod
     def notify_next_approver(application):
-        try:
-            level = application.current_approval_level
-            emp = application.employee
-            # Level 2 approver = shift_incharge
-            if level == 2:
-                approver = emp.shift_incharge
-            else:
-                approver = emp.reporting_manager
-            if not approver:
-                return
-            title = f"Approval required (Level {level}) — {application.reference_number}"
-            body = (
-                f"{emp.full_name} applied for {application.leave_type.name} "
-                f"from {application.start_date} to {application.end_date} "
-                f"({application.total_days} days). Level {level - 1} approved."
-            )
-            NotificationService.create(approver, "leave_applied", title, body, f"/approvals/{application.id}/")
-        except Exception as e:
-            logger.warning("notify_next_approver failed: %s", e)
+        pass  # No-op: parallel approval — both managers notified on submission
 
     @staticmethod
     def notify_delegated(application, delegate_employee):
