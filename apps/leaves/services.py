@@ -224,20 +224,29 @@ class LeaveApplicationService:
         if application.status != 'pending':
             raise LeaveValidationError('Only pending applications can be approved.')
 
-        # Block approval if leave dates have already passed
-        from django.utils import timezone as tz
-        today = tz.now().date()
-        if application.end_date < today:
-            raise LeaveValidationError(
-                'This leave application cannot be approved because the leave dates have already passed. '
-                'Please ask the employee to cancel it, or reject it with a note.',
-                'start_date'
-            )
+        # Past-date approval allowed (client requirement)
 
         leave_type = application.leave_type
-        current_level = application.current_approval_level
+        emp = application.employee
 
-        # Record approval
+        # Determine which level this approver is (L1 or L2)
+        if approver_employee == emp.reporting_manager:
+            current_level = 1
+        elif approver_employee == emp.shift_incharge:
+            current_level = 2
+        else:
+            # Fallback: use current_approval_level
+            current_level = application.current_approval_level
+
+        # Prevent double-approval by same level
+        from apps.leaves.models import LeaveApproval as LA
+        already = LA.objects.filter(application=application, level=current_level).first()
+        if already:
+            raise LeaveValidationError(
+                f'You have already actioned this leave application (Level {current_level}).'
+            )
+
+        # Record this approval
         LeaveApproval.objects.create(
             application=application,
             approver=approver_employee,
@@ -249,13 +258,15 @@ class LeaveApplicationService:
 
         from apps.notifications.services import NotificationService
 
-        if current_level < leave_type.approval_levels:
-            # Advance to next level
-            application.current_approval_level = current_level + 1
-            application.save(update_fields=['current_approval_level'])
-            NotificationService.notify_next_approver(application)
-        else:
-            # Final approval
+        # Check if ALL required levels have now approved
+        required_levels = leave_type.approval_levels  # e.g. 2
+        approved_levels = LA.objects.filter(
+            application=application, action='approved'
+        ).values_list('level', flat=True)
+        all_approved = all(lvl in approved_levels for lvl in range(1, required_levels + 1))
+
+        if all_approved:
+            # Final approval — all levels done
             application.status = 'approved'
             application.save(update_fields=['status'])
 

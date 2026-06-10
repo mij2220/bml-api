@@ -254,17 +254,28 @@ class PendingApprovalsView(APIView):
             emp = request.user.employee_profile
         except Exception:
             return error('No employee profile.', status=400)
-        # L1 manager sees leaves at approval level 1 (their direct reports)
+
+        # Parallel approval: both L1 and L2 see all pending leaves for their team
+        # from the moment the leave is submitted.
+        # L1 team = direct_reports, L2 team = shift_incharge_for
         l1_ids = list(emp.direct_reports.values_list('id', flat=True))
-        # L2 manager sees leaves at approval level 2 (employees they are shift_incharge for)
         l2_ids = list(emp.shift_incharge_for.values_list('id', flat=True))
+        all_team_ids = list(set(l1_ids + l2_ids))
+
+        if not all_team_ids:
+            return success([])
 
         from django.db.models import Q
+        # Get pending leaves for this manager's team
+        # Exclude leaves this manager has already actioned
+        already_actioned = list(
+            LeaveApproval.objects.filter(approver=emp).values_list('application_id', flat=True)
+        )
         apps = LeaveApplication.objects.filter(
             status='pending',
-        ).filter(
-            Q(employee_id__in=l1_ids, current_approval_level=1) |
-            Q(employee_id__in=l2_ids, current_approval_level=2)
+            employee_id__in=all_team_ids,
+        ).exclude(
+            id__in=already_actioned
         ).select_related('employee', 'leave_type').order_by('applied_at')
         return success(LeaveApplicationListSerializer(apps, many=True).data)
 
