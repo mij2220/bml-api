@@ -18,7 +18,9 @@ class EmployeeListCreateView(APIView):
         if user.is_manager_role:
             try:
                 emp = user.employee_profile
-                team_ids = list(emp.direct_reports.values_list('id', flat=True)) + [emp.id]
+                l1_ids = list(emp.direct_reports.values_list('id', flat=True))
+                l2_ids = list(emp.shift_incharge_for.values_list('id', flat=True))
+                team_ids = list(set(l1_ids + l2_ids)) + [emp.id]
                 return qs.filter(id__in=team_ids)
             except Exception:
                 return qs.none()
@@ -420,8 +422,11 @@ class TeamBalancesView(APIView):
                 status__in=['active', 'on_leave']
             ).select_related('department', 'designation')
         else:
+            l1_ids = list(me.direct_reports.values_list('id', flat=True))
+            l2_ids = list(me.shift_incharge_for.values_list('id', flat=True))
+            team_ids = list(set(l1_ids + l2_ids))
             employees = Employee.objects.filter(
-                reporting_manager=me,
+                id__in=team_ids,
                 status__in=['active', 'on_leave']
             ).select_related('department', 'designation')
 
