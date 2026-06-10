@@ -284,6 +284,25 @@ class TeamCalendarView(APIView):
     permission_classes = [IsEmployee]
 
     def get(self, request):
+        # Piggyback daily status sync here — lightweight, cache-guarded
+        try:
+            from django.core.cache import cache
+            from django.utils import timezone as tz
+            from .models import LeaveApplication as LA
+            from apps.employees.models import Employee as Emp
+            if not cache.get('status_synced'):
+                today = tz.now().date()
+                for app in LA.objects.filter(status='approved', start_date__lte=today, end_date__gte=today).select_related('employee'):
+                    if app.employee.status != 'on_leave':
+                        app.employee.status = 'on_leave'
+                        app.employee.save(update_fields=['status'])
+                for emp in Emp.objects.filter(status='on_leave'):
+                    if not LA.objects.filter(employee=emp, status='approved', start_date__lte=today, end_date__gte=today).exists():
+                        emp.status = 'active'
+                        emp.save(update_fields=['status'])
+                cache.set('status_synced', True, 3600)
+        except Exception:
+            pass
         month = request.query_params.get('month', timezone.now().strftime('%Y-%m'))
         try:
             emp = request.user.employee_profile
