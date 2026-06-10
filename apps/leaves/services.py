@@ -301,10 +301,15 @@ class LeaveApplicationService:
                     carried_over=0,
                 )
 
-            # Update employee status if leave starts today or earlier
-            if application.start_date <= timezone.now().date():
+            # Update employee status only if leave is active today (start <= today <= end)
+            today = timezone.now().date()
+            if application.start_date <= today <= application.end_date:
                 application.employee.status = 'on_leave'
                 application.employee.save(update_fields=['status'])
+            elif application.end_date < today:
+                if application.employee.status == 'on_leave':
+                    application.employee.status = 'active'
+                    application.employee.save(update_fields=['status'])
 
             NotificationService.notify_leave_approved(application)
 
