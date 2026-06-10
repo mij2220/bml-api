@@ -4,7 +4,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from apps.core.utils import success, error
 from apps.core.permissions import IsEmployee, IsManager, IsHRAdmin, StandardPagination
-from .models import LeaveApplication, LeaveType, HolidayCalendar, PublicHoliday
+from .models import LeaveApplication, LeaveApproval, LeaveType, HolidayCalendar, PublicHoliday
 from .serializers import (
     LeaveTypeSerializer, LeaveApplicationListSerializer,
     LeaveApplicationDetailSerializer, LeaveApplicationCreateSerializer,
