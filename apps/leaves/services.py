@@ -486,7 +486,9 @@ def get_team_calendar(manager_employee, month_str):
     else:
         end = dt(year, month + 1, 1) - timedelta(days=1)
 
-    team_ids = list(manager_employee.direct_reports.values_list('id', flat=True))
+    l1_ids = list(manager_employee.direct_reports.values_list('id', flat=True))
+    l2_ids = list(manager_employee.shift_incharge_for.values_list('id', flat=True))
+    team_ids = list(set(l1_ids + l2_ids))
     team_ids.append(manager_employee.id)
 
     return LeaveApplication.objects.filter(
