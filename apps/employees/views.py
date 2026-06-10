@@ -11,7 +11,6 @@ class EmployeeListCreateView(APIView):
     permission_classes = [IsEmployee]
     parser_classes = [JSONParser, MultiPartParser, FormParser]
     def get_queryset(self, request):
-        _sync_employee_statuses()
         user = request.user
         qs = Employee.objects.select_related('user','department','designation','branch','reporting_manager')
         if user.is_hr_admin:
