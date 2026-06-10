@@ -38,7 +38,7 @@ class EmployeeListSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ['id','employee_id','p_number','full_name','email','role','department_name',
                   'designation_name','manager_name','reporting_manager_id', 'shift_incharge_id',
-                  'status','employment_type','profile_picture']
+                  'status','employment_type','profile_picture','created_at']
 
 class EmployeeDetailSerializer(serializers.ModelSerializer):
     experience_display = serializers.SerializerMethodField()
