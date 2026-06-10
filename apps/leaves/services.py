@@ -379,20 +379,7 @@ class LeaveApplicationService:
         if application.status not in ('pending', 'approved'):
             raise LeaveValidationError('This application cannot be cancelled.')
 
-        # 2-day rule: employee cannot cancel within 2 days of leave start
-        # (Manager/HR can always cancel via recall)
-        from django.utils import timezone as tz
-        today = tz.now().date()
-        is_manager_or_hr = False
-        if request and request.user:
-            is_manager_or_hr = request.user.role in ('manager', 'hr_admin', 'super_admin')
-        days_until_start = (application.start_date - today).days
-        if days_until_start < 2 and not is_manager_or_hr:
-            raise LeaveValidationError(
-                f'Cancellation is not allowed within 2 days of leave start date. '
-                f'Leave starts on {application.start_date}. Contact your manager to cancel.',
-                'start_date',
-            )
+        # 2-day cancellation rule disabled (client allows cancellation at any time)
 
         old_status = application.status
         application.status = 'cancelled'
