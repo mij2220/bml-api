@@ -64,7 +64,7 @@ py-serializable==2.1.0
 Pygments==2.20.0
 PyJWT==2.13.0
 pyparsing==3.3.2
-pytest==8.3.4
+pytest==9.0.3
 pytest-cov==6.0.0
 pytest-django==4.9.0
 python-crontab==3.3.0
