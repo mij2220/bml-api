@@ -22,7 +22,7 @@ class AuditLogView(APIView):
     def get(self, request):
         try:
             from apps.core.models import AuditLog
-            qs = AuditLog.objects.select_related('actor').order_by('-created_at')
+            qs = AuditLog.objects.select_related('user').order_by('-created_at')
             action = request.query_params.get('action')
             search = request.query_params.get('search', '')
             if action:
@@ -30,9 +30,9 @@ class AuditLogView(APIView):
             if search:
                 from django.db.models import Q
                 qs = qs.filter(
-                    Q(target_label__icontains=search) |
-                    Q(actor_name__icontains=search) |
-                    Q(target_id__icontains=search)
+                    Q(target_model__icontains=search) |
+                    Q(action__icontains=search) |
+                    Q(user__email__icontains=search)
                 )
             page = int(request.query_params.get('page', 1))
             per_page = 50
@@ -41,12 +41,11 @@ class AuditLogView(APIView):
             data = [{
                 'id': str(l.id),
                 'action': l.action,
-                'actor_name': l.actor_name,
-                'target_type': l.target_type,
-                'target_id': l.target_id,
-                'target_label': l.target_label,
-                'old_value': l.old_value,
-                'new_value': l.new_value,
+                'actor_name': l.user.email if l.user else 'System',
+                'target_type': l.target_model,
+                'target_id': str(l.target_id) if l.target_id else None,
+                'target_label': l.target_model,
+                'changes': l.changes,
                 'created_at': l.created_at.isoformat(),
                 'ip_address': l.ip_address,
             } for l in logs]
