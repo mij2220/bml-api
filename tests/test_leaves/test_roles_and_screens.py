@@ -401,3 +401,29 @@ class TestLeavePassPdf:
         assert 'PENDING SUPERVISOR' in text
         # the Supervisor's earlier approval belongs to the previous round
         assert f'{org.sup.full_name} /' not in text
+
+
+# ───────────────────────── Read-only check command ─────────────────────────
+
+def test_leave_workflow_check_reports_and_changes_nothing(org, client_for, apply_leave):
+    from io import StringIO
+    from django.core.management import call_command
+    from django.core import serializers as dj
+    from apps.employees.models import Employee
+    from apps.accounts.models import User
+    apply_leave(org.op1, org.AL)
+    org.op2.reporting_manager = None
+    org.op2.save()
+    org.sup.user.is_shared_account = True
+    org.sup.user.save()
+    snapshot = lambda: dj.serialize('json', [*LeaveApplication.objects.order_by('pk'), *LeaveApproval.objects.order_by('pk'),
+                                             *Employee.objects.order_by('pk'), *User.objects.order_by('pk')])
+    before = snapshot()
+    out = StringIO()
+    call_command('leave_workflow_check', stdout=out)
+    text = out.getvalue()
+    assert snapshot() == before
+    assert 'Pending Supervisor (Naseem Supervisor)' in text
+    assert 'No Shift Supervisor' in text and 'Amir Operator' in text
+    assert 'Rashid Rota' in text and 'Naseem Supervisor' in text
+    assert 'approval levels = 2' in text
