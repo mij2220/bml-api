@@ -192,7 +192,9 @@ class EmployeeBalancesView(APIView):
         return success(data)
 
     def post(self, request, pk):
-        """Adjust a leave balance for an employee."""
+        """Adjust a leave balance for an employee. Admin only."""
+        if not request.user.is_hr_admin:
+            return error('Permission denied.', status=403)
         from apps.leaves.models import LeaveBalance, LeaveType
         from django.utils import timezone
         from decimal import Decimal, InvalidOperation

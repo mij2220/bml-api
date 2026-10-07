@@ -72,6 +72,19 @@ class ReplacementListView(APIView):
         except Exception:
             return error('Could not resolve your employee profile.', status=403)
 
+        # Only the people who manage this leave may assign its replacement: the
+        # employee's Shift Supervisor / SIC, a manager arranging cover for their
+        # own leave, or Admin. (Previously any signed-in user could do this for
+        # any leave, which also let them open its private details.)
+        from apps.leaves.services import approver_ids_for
+        user = request.user
+        allowed = user.is_hr_admin or (
+            user.is_manager_role and (
+                assigned_by.pk in approver_ids_for(leave) or assigned_by.pk == leave.employee_id))
+        if not allowed:
+            return error('Only the employee\'s Shift Supervisor, SIC or Admin can assign a replacement.',
+                         status=403)
+
         assignment = ReplacementAssignmentService.assign(
             leave_application=leave,
             replacement_employee=replacement_emp,
