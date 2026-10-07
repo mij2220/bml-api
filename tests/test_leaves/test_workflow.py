@@ -124,7 +124,20 @@ class TestSequentialApproval:
         assert approve(client_for(org.op2), app['id']).status_code == 403
         assert approve(client_for(org.op1), app['id']).status_code == 403
 
-    def test_single_level_leave_type_is_final_after_supervisor(self, org, client_for, apply_leave):
+    def test_sic_step_applies_even_if_leave_type_says_one_level(self, org, client_for, apply_leave):
+        # The Leave Types screen defaults "approval levels" to 1. The client's rule
+        # (Supervisor, then SIC) must hold regardless of that setting.
+        org.CL.approval_levels = 1
+        org.CL.save()
+        app = apply_leave(org.op1, org.CL, days=1)
+        assert app['id'] not in pending_ids(client_for(org.sic))
+        r = approve(client_for(org.sup), app['id'])
+        assert r.data['data']['status'] == 'pending' and r.data['data']['stage'] == 'pending_sic'
+        assert app['id'] in pending_ids(client_for(org.sic))
+        assert approve(client_for(org.sic), app['id']).data['data']['status'] == 'approved'
+
+    @override_settings(LEAVE_SIC_APPROVAL_ALWAYS=False)
+    def test_setting_can_hand_the_decision_back_to_the_leave_type(self, org, client_for, apply_leave):
         org.CL.approval_levels = 1
         org.CL.save()
         app = apply_leave(org.op1, org.CL, days=1)
@@ -139,10 +152,81 @@ class TestSequentialApproval:
         assert r.data['data']['status'] == 'approved'
         assert sorted(LeaveApproval.objects.filter(application_id=app['id']).values_list('level', flat=True)) == [1, 2]
 
-    def test_admin_can_act_at_the_waiting_level(self, org, client_for, apply_leave):
+    def test_admin_cannot_jump_the_queue(self, org, client_for, apply_leave):
         app = apply_leave(org.op1, org.AL)
-        assert approve(client_for(org.admin), app['id']).data['data']['stage'] == 'pending_sic'
-        assert approve(client_for(org.admin), app['id']).data['data']['status'] == 'approved'
+        r = approve(client_for(org.admin), app['id'])
+        assert r.status_code == 403 and org.sup.full_name in r.data['message']
+        approve(client_for(org.sup), app['id'])
+        assert approve(client_for(org.admin), app['id']).status_code == 403
+        assert app['id'] not in pending_ids(client_for(org.admin))
+        assert detail(client_for(org.admin), app['id'])['permissions']['can_act'] is False
+
+    def test_admin_who_is_the_supervisor_cannot_also_sign_as_sic(self, org, client_for, apply_leave):
+        org.op2.reporting_manager = org.admin
+        org.op2.save()
+        app = apply_leave(org.op2, org.AL)
+        r = approve(client_for(org.admin), app['id'])
+        assert r.data['data']['stage'] == 'pending_sic'
+        assert r.data['data']['permissions']['can_act'] is False
+        assert approve(client_for(org.admin), app['id']).status_code == 403
+
+
+class TestNobodyAssigned:
+    """A request must never sit in nobody's list."""
+
+    def test_no_supervisor_goes_straight_to_the_sic(self, org, client_for, apply_leave):
+        org.op1.reporting_manager = None
+        org.op1.save()
+        app = apply_leave(org.op1, org.AL)
+        assert app['stage'] == 'pending_sic' and app['waiting_for'] == org.sic.full_name
+        assert app['id'] in pending_ids(client_for(org.sic))
+        assert Notification.objects.filter(recipient=org.sic, type='leave_applied').count() == 1
+        assert approve(client_for(org.sic), app['id']).data['data']['status'] == 'approved'
+
+    def test_no_sic_is_final_after_the_supervisor(self, org, client_for, apply_leave):
+        org.op1.shift_incharge = None
+        org.op1.save()
+        app = apply_leave(org.op1, org.AL)
+        assert app['stage'] == 'pending_supervisor'
+        assert approve(client_for(org.sup), app['id']).data['data']['status'] == 'approved'
+
+    def test_nobody_assigned_goes_to_admin(self, org, client_for, apply_leave):
+        app = apply_leave(org.sic, org.AL)                  # the SIC has no Supervisor and no SIC
+        assert app['stage'] == 'pending_admin' and app['stage_label'] == 'Pending Admin'
+        assert app['waiting_for'] == 'Admin'
+        assert app['id'] in pending_ids(client_for(org.admin))
+        assert Notification.objects.filter(recipient=org.admin, type='leave_applied').count() == 1
+        assert approve(client_for(org.sup), app['id']).status_code == 403
+        r = approve(client_for(org.admin), app['id'])
+        assert r.status_code == 200 and r.data['data']['status'] == 'approved'
+        assert used(org.sic, org.AL) == Decimal('2')
+
+    def test_admin_can_reject_or_return_an_unassigned_request(self, org, client_for, apply_leave):
+        app = apply_leave(org.sic, org.AL)
+        r = client_for(org.admin).post(f'{API}/leaves/{app["id"]}/return/', {'comment': 'fix'}, format='json')
+        assert r.status_code == 200
+        assert LeaveApplication.objects.get(pk=app['id']).status == 'returned'
+
+    def test_nobody_approves_their_own_leave(self, org, client_for, apply_leave):
+        own = apply_leave(org.admin, org.AL) if LeaveBalance.objects.filter(employee=org.admin).exists() else None
+        org.sup.reporting_manager = org.sup            # mis-set: Supervisor reports to himself
+        org.sup.shift_incharge = None
+        org.sup.save()
+        app = apply_leave(org.sup, org.CL, days=1)
+        assert app['stage'] == 'pending_admin'
+        assert approve(client_for(org.sup), app['id']).status_code == 403
+        assert own is None or approve(client_for(org.admin), own['id']).status_code == 403
+
+    def test_application_level_sic_gives_no_authority(self, org, client_for, apply_leave):
+        # The apply form can still send shift_incharge_id; it must not let the
+        # applicant pick their own approver.
+        org.op1.shift_incharge = None
+        org.op1.save()
+        app = apply_leave(org.op1, org.AL, shift_incharge_id=str(org.sup_b.id))
+        assert client_for(org.sup_b).get(f'{API}/leaves/{app["id"]}/').status_code == 403
+        approve(client_for(org.sup), app['id'])
+        assert LeaveApplication.objects.get(pk=app['id']).status == 'approved'   # Supervisor was final
+        assert LeaveApproval.objects.filter(application_id=app['id'], approver=org.sup_b).count() == 0
 
     def test_reject_by_sic_after_supervisor_approval(self, org, client_for, apply_leave):
         app = apply_leave(org.op1, org.AL)
@@ -293,6 +377,31 @@ class TestEdit:
         obj = LeaveApplication.objects.get(pk=app['id'])
         assert obj.total_days == Decimal('1'), 'a failed edit must not change anything'
 
+    def test_notice_period_is_not_rechecked_unless_the_start_date_moves(self, org, client_for, apply_leave):
+        org.AL.min_notice_days = 7
+        org.AL.save()
+        app = apply_leave(org.op1, org.AL, start_in=8)
+        client_for(org.sup).post(f'{API}/leaves/{app["id"]}/return/', {'comment': 'add detail'}, format='json')
+        LeaveApplication.objects.filter(pk=app['id']).update(start_date=days_from_now(4), end_date=days_from_now(5))
+        # now inside the notice window: resubmitting with only the reason changed is fine
+        r = client_for(org.op1).patch(f'{API}/leaves/{app["id"]}/', {'reason': 'More detail as asked'}, format='json')
+        assert r.status_code == 200, r.data
+        # ...but moving the start date is checked like a new application
+        client_for(org.sup).post(f'{API}/leaves/{app["id"]}/return/', {'comment': 'again'}, format='json')
+        r = client_for(org.op1).patch(f'{API}/leaves/{app["id"]}/', {
+            'start_date': str(days_from_now(3)), 'end_date': str(days_from_now(4))}, format='json')
+        assert r.status_code == 400 and 'notice' in r.data['message']
+
+    def test_saving_without_changes_does_not_notify_again(self, org, client_for, apply_leave):
+        app = apply_leave(org.op1, org.AL)
+        before = Notification.objects.filter(recipient=org.sup).count()
+        assert client_for(org.op1).patch(f'{API}/leaves/{app["id"]}/', {}, format='json').status_code == 200
+        assert Notification.objects.filter(recipient=org.sup).count() == before
+
+    def test_long_contact_number_is_accepted(self, org, client_for, apply_leave):
+        app = apply_leave(org.op1, org.AL, contact_during_leave='0300-1234567 / 0301-7654321')
+        assert LeaveApplication.objects.get(pk=app['id']).contact_during_leave == '0300-1234567 / 0301-'
+
     def test_end_before_start_is_refused(self, org, client_for, apply_leave):
         app = apply_leave(org.op1, org.AL)
         r = client_for(org.op1).patch(f'{API}/leaves/{app["id"]}/', {'end_date': str(days_from_now(1))}, format='json')
@@ -322,18 +431,27 @@ class TestCancel:
 
     def test_employee_can_cancel_up_to_one_day_before(self, org, client_for, apply_leave):
         app = apply_leave(org.op1, org.AL, start_in=1)            # starts tomorrow
-        assert app['permissions']['can_cancel'] is True
-        assert app['permissions']['cancel_deadline'] == str(today())
+        approve(client_for(org.sup), app['id'])
+        d = detail(client_for(org.op1), app['id'])
+        assert d['permissions']['can_cancel'] is True
+        assert d['permissions']['cancel_deadline'] == str(today())
         assert self.cancel(client_for(org.op1), app['id']).status_code == 200
 
-    def test_employee_cannot_cancel_on_the_day(self, org, client_for, apply_leave):
+    def test_employee_cannot_cancel_on_the_day_once_reviewed(self, org, client_for, apply_leave):
         app = apply_leave(org.op1, org.CL, start_in=0, days=1)    # starts today
-        assert app['permissions']['can_cancel'] is False
-        assert 'Shift Supervisor' in app['permissions']['cancel_blocked_reason']
+        approve(client_for(org.sup), app['id'])
+        d = detail(client_for(org.op1), app['id'])
+        assert d['permissions']['can_cancel'] is False
+        assert 'Shift Supervisor' in d['permissions']['cancel_blocked_reason']
         r = self.cancel(client_for(org.op1), app['id'])
         assert r.status_code == 400
         assert 'Shift Supervisor' in r.data['message']
         assert LeaveApplication.objects.get(pk=app['id']).status == 'pending'
+
+    def test_request_nobody_has_reviewed_can_be_withdrawn_any_time(self, org, client_for, apply_leave):
+        app = apply_leave(org.op1, org.CL, start_in=0, days=1)    # starts today, still with the Supervisor
+        assert app['permissions']['can_cancel'] is True
+        assert self.cancel(client_for(org.op1), app['id']).status_code == 200
 
     def test_supervisor_can_still_cancel_after_the_cut_off(self, org, client_for, apply_leave):
         app = apply_leave(org.op1, org.CL, start_in=0, days=1)
@@ -364,13 +482,16 @@ class TestCancel:
     @override_settings(LEAVE_CANCEL_MIN_DAYS_BEFORE_START=0)
     def test_limit_can_be_switched_off(self, org, client_for, apply_leave):
         app = apply_leave(org.op1, org.CL, start_in=0, days=1)
+        approve(client_for(org.sup), app['id'])
         assert self.cancel(client_for(org.op1), app['id']).status_code == 200
 
     @override_settings(LEAVE_CANCEL_MIN_DAYS_BEFORE_START=3)
     def test_limit_is_configurable(self, org, client_for, apply_leave):
         app = apply_leave(org.op1, org.AL, start_in=2)
+        approve(client_for(org.sup), app['id'])
         assert self.cancel(client_for(org.op1), app['id']).status_code == 400
         app2 = apply_leave(org.op2, org.AL, start_in=3)
+        approve(client_for(org.sup), app2['id'])
         assert self.cancel(client_for(org.op2), app2['id']).status_code == 200
 
     def test_rejected_application_cannot_be_cancelled(self, org, client_for, apply_leave):

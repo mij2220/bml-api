@@ -200,7 +200,7 @@ class TestRotaManager:
 
     def test_rota_manager_can_use_own_leave_screens(self, org, client_for, apply_leave):
         app = apply_leave(org.rota, org.CL, days=1)
-        assert app['stage'] == 'pending_supervisor'
+        assert app['stage'] == 'pending_admin'      # this test rota manager has no Supervisor / SIC set
         r = client_for(org.rota).get(f'{API}/leaves/?mine=true')
         assert [x['id'] for x in r.data['data']] == [app['id']]
         assert client_for(org.rota).get(f'{API}/employees/me/balances/').status_code == 200
@@ -324,3 +324,80 @@ class TestAccountSettings:
         assert org.op1.reporting_manager_id == org.sup.id            # everything else ignored
         assert org.op1.shift_incharge_id == org.sic.id
         assert org.op1.status == 'active' and str(org.op1.joining_date) == '2015-01-01'
+
+
+# ───────────────────────── Holes closed along the way ─────────────────────────
+
+class TestClosedHoles:
+
+    def test_only_admin_can_adjust_a_balance(self, org, client_for):
+        body = {'leave_type_id': str(org.AL.id), 'adjustment': 50}
+        for person in (org.op1, org.rota, org.sup):
+            r = client_for(person).post(f'{API}/employees/{person.id}/balances/', body, format='json')
+            assert r.status_code == 403
+        assert client_for(org.admin).post(
+            f'{API}/employees/{org.op1.id}/balances/', body, format='json').status_code == 200
+
+    def test_replacement_can_only_be_assigned_by_those_managing_the_leave(self, org, client_for, apply_leave):
+        app = apply_leave(org.op1, org.AL)
+        body = lambda who: {'leave_application_id': app['id'], 'replacement_employee_id': str(who.id)}
+        # an outsider cannot make themselves the replacement to read the details
+        for person in (org.op_b, org.rota, org.sup_b, org.op2):
+            assert client_for(person).post(f'{API}/replacements/', body(person), format='json').status_code == 403
+            assert client_for(person).get(f'{API}/leaves/{app["id"]}/').status_code == 403
+        for person in (org.sup, org.sic, org.admin):
+            assert client_for(person).post(f'{API}/replacements/', body(org.op2), format='json').status_code == 201
+        # the assigned replacement may see what they are covering
+        assert client_for(org.op2).get(f'{API}/leaves/{app["id"]}/').status_code == 200
+
+    def test_odd_input_does_not_crash(self, org, client_for, apply_leave):
+        app = apply_leave(org.op1, org.AL)
+        c = client_for(org.sup)
+        assert c.post(f'{API}/leaves/{app["id"]}/return/', {'comment': ['x']}, format='json').status_code in (200, 400)
+        assert c.get(f'{API}/leaves/', {'search': 'a\x00b'}).status_code == 200
+        app2 = apply_leave(org.op2, org.AL)
+        org.sup.user.is_shared_account = True
+        org.sup.user.save()
+        r = c.post(f'{API}/leaves/{app2["id"]}/approve/', {'signer_name': 123, 'signer_p_number': 45}, format='json')
+        assert r.status_code == 200 and r.data['data']['approvals'][0]['signer_name'] == '123'
+
+
+# ───────────────────────── Leave pass PDF ─────────────────────────
+
+class TestLeavePassPdf:
+
+    def text_of(self, response):
+        import subprocess, tempfile
+        with tempfile.NamedTemporaryFile(suffix='.pdf') as f:
+            f.write(response.content)
+            f.flush()
+            return subprocess.run(['pdftotext', '-layout', f.name, '-'], capture_output=True, text=True).stdout
+
+    def test_pdf_shows_stage_signature_and_phone(self, org, client_for, apply_leave):
+        import shutil
+        if not shutil.which('pdftotext'):
+            pytest.skip('pdftotext not installed')
+        org.sup.user.is_shared_account = True
+        org.sup.user.save()
+        app = apply_leave(org.op1, org.AL)
+        client_for(org.sup).post(f'{API}/leaves/{app["id"]}/approve/', {
+            'signer_name': 'Imtiaz Ahmed', 'signer_p_number': '40123'}, format='json')
+        text = self.text_of(client_for(org.op1).get(f'{API}/leaves/{app["id"]}/pdf/'))
+        assert 'PENDING SIC' in text
+        assert 'Imtiaz Ahmed (P.No. 40123)' in text
+        assert '0300-1234567' in text            # telephone during leave is now printed
+
+    def test_pdf_after_return_and_resubmit_ignores_old_round(self, org, client_for, apply_leave):
+        import shutil
+        if not shutil.which('pdftotext'):
+            pytest.skip('pdftotext not installed')
+        app = apply_leave(org.op1, org.AL)
+        client_for(org.sup).post(f'{API}/leaves/{app["id"]}/approve/', {}, format='json')
+        client_for(org.sic).post(f'{API}/leaves/{app["id"]}/return/', {'comment': 'fix dates'}, format='json')
+        text = self.text_of(client_for(org.op1).get(f'{API}/leaves/{app["id"]}/pdf/'))
+        assert 'RETURNED' in text
+        client_for(org.op1).patch(f'{API}/leaves/{app["id"]}/', {}, format='json')
+        text = self.text_of(client_for(org.op1).get(f'{API}/leaves/{app["id"]}/pdf/'))
+        assert 'PENDING SUPERVISOR' in text
+        # the Supervisor's earlier approval belongs to the previous round
+        assert f'{org.sup.full_name} /' not in text

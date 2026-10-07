@@ -161,6 +161,10 @@ FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
 # before it starts; after that the Shift Supervisor, SIC or Admin must do it.
 # 0 switches the limit off (cancel at any time, the behaviour before this setting).
 LEAVE_CANCEL_MIN_DAYS_BEFORE_START = int(os.environ.get('LEAVE_CANCEL_MIN_DAYS_BEFORE_START', '1'))
+# The SIC step applies to every leave type whenever the employee has a SIC
+# (client: "structure should be followed"). Set to 0 to use each leave type's own
+# "approval levels" setting instead.
+LEAVE_SIC_APPROVAL_ALWAYS = os.environ.get('LEAVE_SIC_APPROVAL_ALWAYS', '1') not in ('0', 'false', 'False', '')
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'BookMyLeave API',

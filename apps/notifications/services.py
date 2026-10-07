@@ -7,23 +7,60 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+def _days(application):
+    """'3 days', '1 day', '0.5 day' — without the trailing zeros of the stored decimal."""
+    from decimal import Decimal
+    try:
+        n = Decimal(str(application.total_days)).normalize()
+        text = format(n, 'f')
+        return f"{text} day" if n <= 1 else f"{text} days"
+    except Exception:
+        return f"{application.total_days} days"
+
+
 class NotificationService:
 
     @staticmethod
     def create(recipient_employee, notif_type, title, body, action_url="", meta=None):
         try:
+            from django.db import transaction
             from .models import Notification
-            return Notification.objects.create(
-                recipient=recipient_employee,
-                type=notif_type,
-                title=title,
-                body=body,
-                action_url=action_url,
-                meta=meta or {},
-            )
+            # Own savepoint: if this insert fails, the leave action that triggered
+            # it is not rolled back with it.
+            with transaction.atomic():
+                return Notification.objects.create(
+                    recipient=recipient_employee,
+                    type=notif_type,
+                    title=(title or "")[:200],
+                    body=body,
+                    action_url=(action_url or "")[:500],
+                    meta=meta or {},
+                )
         except Exception as e:
             logger.warning("Could not create notification: %s", e)
             return None
+
+    @staticmethod
+    def admins():
+        """Active Admin accounts that have an employee record (to notify)."""
+        try:
+            from apps.employees.models import Employee
+            return list(Employee.objects.filter(
+                user__role__in=("hr_admin", "super_admin"), user__is_active=True))
+        except Exception as e:
+            logger.warning("admins lookup failed: %s", e)
+            return []
+
+    @staticmethod
+    def first_approvers(application):
+        """Who a pending application is waiting for right now: the Supervisor, the
+        SIC when no Supervisor is assigned, or the Admins when nobody is assigned."""
+        from apps.leaves.services import pending_level, level_approver
+        lvl = pending_level(application)
+        approver = level_approver(application, lvl) if lvl else None
+        if approver is not None:
+            return [approver]
+        return [a for a in NotificationService.admins() if a.pk != application.employee_id]
 
     @staticmethod
     def send_email_async(to_email, subject, html_body):
@@ -35,8 +72,9 @@ class NotificationService:
 
     @staticmethod
     def notify_leave_applied(application):
-        """New application: tell the Shift Supervisor (Level 1) only.
-        Approval is sequential — the SIC is told when the Supervisor approves."""
+        """New application: tell only the person whose turn it is (normally the
+        Shift Supervisor). Approval is sequential — the SIC is told when the
+        Supervisor approves."""
         try:
             emp = application.employee
             title = f"Leave request from {emp.full_name}"
@@ -46,8 +84,8 @@ class NotificationService:
                 f"to {application.end_date} ({application.total_days} days)."
             )
             url = f"/approvals/{application.id}/"
-            if emp.reporting_manager:
-                NotificationService.create(emp.reporting_manager, "leave_applied", title, body, url)
+            for approver in NotificationService.first_approvers(application):
+                NotificationService.create(approver, "leave_applied", title, body, url)
         except Exception as e:
             logger.warning("notify_leave_applied failed: %s", e)
 
@@ -85,7 +123,7 @@ class NotificationService:
                 approver, "leave_applied",
                 f"{role} approval required - {application.reference_number}",
                 f"{emp.full_name}'s {application.leave_type.name} from {application.start_date} "
-                f"to {application.end_date} ({application.total_days} days) has been approved by "
+                f"to {application.end_date} ({_days(application)}) has been approved by "
                 f"the Shift Supervisor and is waiting for your approval.",
                 f"/approvals/{application.id}/",
             )
@@ -128,13 +166,13 @@ class NotificationService:
     def notify_leave_resubmitted(application):
         try:
             emp = application.employee
-            if emp.reporting_manager:
+            for approver in NotificationService.first_approvers(application):
                 NotificationService.create(
-                    emp.reporting_manager, "leave_applied",
+                    approver, "leave_applied",
                     f"Leave request resubmitted by {emp.full_name}",
                     f"{emp.full_name} corrected and resubmitted {application.leave_type.name} "
                     f"from {application.start_date} to {application.end_date} "
-                    f"({application.total_days} days).",
+                    f"({_days(application)}).",
                     f"/approvals/{application.id}/",
                 )
         except Exception as e:
@@ -144,13 +182,13 @@ class NotificationService:
     def notify_leave_updated(application):
         try:
             emp = application.employee
-            if emp.reporting_manager:
+            for approver in NotificationService.first_approvers(application):
                 NotificationService.create(
-                    emp.reporting_manager, "leave_applied",
+                    approver, "leave_applied",
                     f"Leave request changed by {emp.full_name}",
                     f"{emp.full_name} changed their pending {application.leave_type.name} request. "
                     f"It is now from {application.start_date} to {application.end_date} "
-                    f"({application.total_days} days).",
+                    f"({_days(application)}).",
                     f"/approvals/{application.id}/",
                 )
         except Exception as e:
@@ -176,7 +214,7 @@ class NotificationService:
         """event: 'approved' | 'cancelled'"""
         try:
             emp = application.employee
-            period = f"{application.start_date} to {application.end_date} ({application.total_days} days)"
+            period = f"{application.start_date} to {application.end_date} ({_days(application)})"
             if event == "approved":
                 ntype = "leave_approved"
                 title = f"Leave approved - {emp.full_name}"
@@ -201,7 +239,7 @@ class NotificationService:
         try:
             from apps.leaves.services import level_approver
             emp = application.employee
-            period = f"{application.start_date} to {application.end_date} ({application.total_days} days)"
+            period = f"{application.start_date} to {application.end_date} ({_days(application)})"
             url = f"/my-leaves/{application.id}/"
             because = f" Reason: {reason}" if reason else ""
             if by_employee:

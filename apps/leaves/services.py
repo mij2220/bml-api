@@ -31,6 +31,9 @@ class LeavePermissionError(LeaveValidationError):
 # (Employee.reporting_manager), Level 2 = the SIC (Employee.shift_incharge).
 # The SIC only gets a request after the Supervisor has approved it.
 #
+# A level that has nobody assigned is skipped, so a request can never sit in
+# nobody's list: no Supervisor -> straight to the SIC; nobody at all -> Admin.
+#
 # The stage is always worked out from the approval rows, never from
 # LeaveApplication.current_approval_level alone, so applications created
 # before this change (when both levels could act at the same time) keep
@@ -39,6 +42,7 @@ class LeavePermissionError(LeaveValidationError):
 STAGE_LABELS = {
     'pending_supervisor': 'Pending Supervisor',
     'pending_sic': 'Pending SIC',
+    'pending_admin': 'Pending Admin',
     'approved': 'Approved',
     'rejected': 'Rejected',
     'returned': 'Returned',
@@ -46,34 +50,81 @@ STAGE_LABELS = {
     'expired': 'Expired',
 }
 
+# Level number recorded when Admin decides a request that has no Supervisor and no SIC.
+ADMIN_LEVEL = 0
+
+
+def sic_approval_always():
+    """Client rule: "SIC can see only after the Supervisor has approved. Structure
+    should be followed." So the SIC step applies to every leave type whenever the
+    employee has a SIC, even if the leave type itself is set to one approval level.
+    Set LEAVE_SIC_APPROVAL_ALWAYS=0 to go by the leave type's own setting instead."""
+    from django.conf import settings
+    return bool(getattr(settings, 'LEAVE_SIC_APPROVAL_ALWAYS', True))
+
 
 def required_levels(application):
-    return max(1, application.leave_type.approval_levels or 1)
+    levels = max(1, application.leave_type.approval_levels or 1)
+    if sic_approval_always():
+        levels = max(levels, 2)
+    return levels
+
+
+def level_approver(application, level):
+    """The Employee who approves at `level` for this application, or None when
+    nobody is assigned (or the only person assigned is the applicant).
+
+    Only the employee's own record decides this. The `shift_incharge` stored on
+    the application is for display on the leave pass and gives no authority."""
+    emp = application.employee
+    if level == 1:
+        approver = emp.reporting_manager
+    elif level == 2:
+        approver = emp.shift_incharge
+    else:
+        approver = None
+    if approver is None or approver.pk == emp.pk:
+        return None
+    return approver
+
+
+def approval_chain(application):
+    """The levels somebody has to approve, in order. Levels with nobody assigned are skipped."""
+    return [lvl for lvl in range(1, required_levels(application) + 1)
+            if level_approver(application, lvl) is not None]
 
 
 def pending_level(application, approvals=None):
-    """Lowest approval level still waiting, or None when every level has approved.
+    """Lowest level in the chain that has not approved yet.
 
+    None means nobody in the chain is left: either every level has approved, or
+    nobody is assigned at all (then a pending request waits for Admin).
     Pass `approvals` (e.g. a prefetched list) to avoid a query.
     """
     if approvals is None:
         approvals = LeaveApproval.objects.filter(application=application, is_superseded=False)
     done = {a.level for a in approvals if a.action == 'approved' and not a.is_superseded}
-    for lvl in range(1, required_levels(application) + 1):
+    for lvl in approval_chain(application):
         if lvl not in done:
             return lvl
     return None
 
 
 def get_stage(application, approvals=None):
-    """pending_supervisor | pending_sic | approved | rejected | returned | cancelled | expired"""
+    """pending_supervisor | pending_sic | pending_admin | approved | rejected | returned | cancelled | expired"""
     if application.status != 'pending':
         return application.status
     lvl = pending_level(application, approvals)
-    if lvl is None or lvl <= 1:
-        return 'pending_supervisor'
-    if lvl == 2:
+    if lvl is None:
+        return 'pending_admin'
+    approver = level_approver(application, lvl)
+    sic = application.employee.shift_incharge
+    # Named after the person it is waiting for: e.g. a Supervisor's own request,
+    # whose first approver is the SIC, reads "Pending SIC".
+    if lvl == 2 or (sic is not None and approver is not None and approver.pk == sic.pk):
         return 'pending_sic'
+    if lvl == 1:
+        return 'pending_supervisor'
     return f'pending_level_{lvl}'
 
 
@@ -85,14 +136,15 @@ def get_stage_label(stage):
     return stage.replace('_', ' ').title()
 
 
-def level_approver(application, level):
-    """The Employee who approves at `level` for this application (may be None)."""
-    emp = application.employee
-    if level == 1:
-        return emp.reporting_manager
-    if level == 2:
-        return emp.shift_incharge or application.shift_incharge
-    return None
+def waiting_for_name(application, approvals=None):
+    """Who a pending application is waiting for ('' when it is not pending)."""
+    if application.status != 'pending':
+        return ''
+    lvl = pending_level(application, approvals)
+    if lvl is None:
+        return 'Admin'
+    approver = level_approver(application, lvl)
+    return approver.full_name if approver else 'Admin'
 
 
 def approver_ids_for(application):
@@ -177,11 +229,14 @@ def application_permissions(application, user, approvals=None):
             perms['can_cancel'] = True
         elif is_owner:
             deadline = employee_cancel_deadline(application)
+            # No limit while it is still in the employee's hands or nobody has
+            # reviewed it yet: withdrawing such a request affects no roster plan.
+            untouched = application.status == 'pending' and not active
             if application.status == 'returned' or deadline is None:
                 perms['can_cancel'] = True
             else:
                 perms['cancel_deadline'] = str(deadline)
-                if timezone.localdate() <= deadline:
+                if untouched or timezone.localdate() <= deadline:
                     perms['can_cancel'] = True
                 else:
                     perms['cancel_blocked_reason'] = (
@@ -189,19 +244,22 @@ def application_permissions(application, user, approvals=None):
                         f'Please ask your Shift Supervisor to cancel it.'
                     )
 
-    if application.status == 'pending' and actor is not None:
+    if application.status == 'pending' and getattr(user, 'is_manager_role', False):
         lvl = pending_level(application, approvals)
-        expected = level_approver(application, lvl) if lvl else None
-        if lvl and ((expected is not None and expected.pk == actor.pk) or is_admin):
-            perms['can_act'] = bool(getattr(user, 'is_manager_role', False))
+        if lvl is None:
+            # Nobody assigned: Admin decides (never their own request)
+            perms['can_act'] = bool(is_admin and not is_owner)
+        elif actor is not None:
+            expected = level_approver(application, lvl)
+            perms['can_act'] = expected is not None and expected.pk == actor.pk
     return perms
 
 
 def _signature(user, signer_name, signer_p_number):
     """Shared logins must sign each action with the acting person's own name and
     P.No.; personal logins sign as themselves, so anything typed is ignored."""
-    name = (signer_name or '').strip()
-    p_no = (signer_p_number or '').strip()
+    name = str(signer_name or '').strip()
+    p_no = str(signer_p_number or '').strip()
     if user is not None and getattr(user, 'is_shared_account', False):
         if not name or not p_no:
             raise LeaveValidationError(
@@ -213,15 +271,21 @@ def _signature(user, signer_name, signer_p_number):
 
 
 def _resolve_actor_level(application, approver_employee, user):
-    """Which level is the approver acting at? Raises if it is not their turn."""
+    """Which level is the approver acting at? Raises if it is not their turn.
+
+    Only the person assigned to the waiting level can act. Admin decides only
+    the requests that have nobody assigned (returns ADMIN_LEVEL)."""
+    if approver_employee.pk == application.employee_id:
+        raise LeavePermissionError('You cannot approve, reject or return your own leave application.')
     level = pending_level(application)
     if level is None:
-        raise LeaveValidationError('This application has already been approved at every level.')
+        if getattr(user, 'is_hr_admin', False):
+            return ADMIN_LEVEL
+        raise LeavePermissionError(
+            'No Shift Supervisor or SIC is assigned for this employee, so this request is with Admin.')
     expected = level_approver(application, level)
     if expected is not None and expected.pk == approver_employee.pk:
         return level
-    if getattr(user, 'is_hr_admin', False):
-        return level  # Admin can act at whichever level is waiting
     l1 = level_approver(application, 1)
     l2 = level_approver(application, 2)
     if level == 1 and l2 is not None and l2.pk == approver_employee.pk:
@@ -233,6 +297,9 @@ def _resolve_actor_level(application, approver_employee, user):
         raise LeavePermissionError(
             'You have already approved this request. It is now waiting for the SIC.'
         )
+    if expected is not None:
+        raise LeavePermissionError(
+            f'This request is waiting for {expected.full_name}. Only they can act on it.')
     raise LeavePermissionError('You are not an approver for this leave application.')
 
 
@@ -456,7 +523,8 @@ class LeaveApplicationService:
             )
             levels_done.append(current_level)
             next_level = pending_level(application)
-            if next_level is None:
+            if next_level is None or current_level == ADMIN_LEVEL:
+                next_level = None       # nobody left in the chain: this approval is final
                 break
             next_approver = level_approver(application, next_level)
             if next_approver is not None and next_approver.pk == approver_employee.pk:
@@ -660,6 +728,8 @@ class LeaveApplicationService:
             raise LeaveValidationError(
                 f'A {application.status} application cannot be changed.')
 
+        original_start = application.start_date
+        changed = False
         for field in LeaveApplicationService.EDITABLE_FIELDS:
             if field in changes:
                 value = changes[field]
@@ -667,9 +737,16 @@ class LeaveApplicationService:
                     value = (value or '')[:20]
                 if field == 'address_during_leave':
                     value = value or ''
+                if getattr(application, field) != value:
+                    changed = True
                 setattr(application, field, value)
         if not application.is_half_day:
             application.half_day_period = None
+
+        if not application.leave_type.is_active:
+            raise LeaveValidationError(
+                f'{application.leave_type.name} is no longer available. Please choose another leave type.',
+                'leave_type')
 
         if application.leave_type.code == 'CD' and not application.duty_date_for_cd:
             raise LeaveValidationError(
@@ -679,6 +756,9 @@ class LeaveApplicationService:
             application.employee, application.leave_type,
             application.start_date, application.end_date,
             application.is_half_day, application.hours_requested,
+            # The notice period was already checked when the employee first applied;
+            # it is checked again only if they move the start date.
+            skip_notice=(application.start_date == original_start),
             doctor_approval=bool(changes.get('doctor_approval', False)),
             exclude_id=application.pk,
         )
@@ -699,7 +779,7 @@ class LeaveApplicationService:
             log_action(request, 'leave.resubmitted', 'LeaveApplication', application.id,
                        {'reference': application.reference_number,
                         'days': str(application.total_days)})
-        else:
+        elif changed:
             application.save()
             NotificationService.notify_leave_updated(application)
             log_action(request, 'leave.updated', 'LeaveApplication', application.id,
@@ -763,8 +843,14 @@ class LeaveApplicationService:
 
         # Minimum notice for an employee cancelling their own leave (client:
         # "there should be a minimum time limit for cancellation, like a day").
-        # After the cut-off the Shift Supervisor, SIC or Admin can still cancel.
-        if is_owner and not (is_admin or is_approver) and application.status != 'returned':
+        # It applies once the Supervisor has approved (the request is then part of
+        # the roster picture). After the cut-off the Shift Supervisor, SIC or Admin
+        # can still cancel. A request nobody has reviewed yet, or a returned one,
+        # can be withdrawn at any time.
+        untouched = (application.status == 'pending' and not LeaveApproval.objects.filter(
+            application=application, is_superseded=False).exists())
+        if (is_owner and not (is_admin or is_approver)
+                and application.status != 'returned' and not untouched):
             deadline = employee_cancel_deadline(application)
             if deadline is not None and timezone.localdate() > deadline:
                 days = cancel_min_days()
@@ -908,6 +994,8 @@ def get_team_calendar(manager_employee, month_str, user=None, include_pending=Fa
 
     if role in ('hr_admin', 'super_admin'):
         statuses = ['approved', 'pending'] if include_pending else ['approved']
+    elif manager_employee is None:
+        return LeaveApplication.objects.none()
     elif role == 'rota_manager':
         if not manager_employee.department_id:
             return LeaveApplication.objects.none()
@@ -941,9 +1029,12 @@ def get_team_leave_dashboard(manager_employee, user, year=None, search=''):
     employees = Employee.objects.filter(status__in=['active', 'on_leave'])
     is_admin = getattr(user, 'is_hr_admin', False)
     if not is_admin:
-        l1_ids = set(manager_employee.direct_reports.values_list('id', flat=True))
-        l2_ids = set(manager_employee.shift_incharge_for.values_list('id', flat=True))
-        employees = employees.filter(id__in=(l1_ids | l2_ids))
+        if manager_employee is None:
+            employees = employees.none()
+        else:
+            l1_ids = set(manager_employee.direct_reports.values_list('id', flat=True))
+            l2_ids = set(manager_employee.shift_incharge_for.values_list('id', flat=True))
+            employees = employees.filter(id__in=(l1_ids | l2_ids))
     search = (search or '').strip()
     if search:
         employees = employees.filter(

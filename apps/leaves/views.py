@@ -153,7 +153,7 @@ class LeaveApplicationListView(APIView):
                 qs = qs.filter(start_date__lte=date_to)
         except (DjangoValidationError, ValueError, TypeError):
             return error('Invalid filter value.', status=400)
-        search = (params.get('search') or '').strip()
+        search = (params.get('search') or '').replace('\x00', '').strip()
         if search:
             qs = qs.filter(
                 Q(reference_number__icontains=search)
@@ -277,10 +277,15 @@ class LeaveApplicationDetailView(APIView):
         )
 
 
+def _text(value):
+    """Request values that should be plain text (guards against lists / numbers)."""
+    return value.strip() if isinstance(value, str) else ('' if value is None else str(value).strip())
+
+
 def _signer(request):
     return {
-        'signer_name': request.data.get('signer_name', ''),
-        'signer_p_number': request.data.get('signer_p_number', ''),
+        'signer_name': _text(request.data.get('signer_name')),
+        'signer_p_number': _text(request.data.get('signer_p_number')),
     }
 
 
@@ -296,7 +301,7 @@ class LeaveApproveView(APIView):
         try:
             from .services import LeaveApplicationService
             app = LeaveApplicationService.approve(
-                app, approver, request.data.get('comment', ''), request, **_signer(request))
+                app, approver, _text(request.data.get('comment')), request, **_signer(request))
             app = _application_queryset().get(pk=app.pk)
             return success(
                 LeaveApplicationDetailSerializer(app, context={'request': request}).data, 'Approved.')
@@ -308,7 +313,7 @@ class LeaveRejectView(APIView):
     permission_classes = [IsManager]
 
     def post(self, request, pk):
-        comment = request.data.get('comment', '')
+        comment = _text(request.data.get('comment'))
         if not comment:
             return error('Comment is required when rejecting.', errors={'comment': ['Required.']}, status=400)
         try:
@@ -329,7 +334,7 @@ class LeaveReturnView(APIView):
     permission_classes = [IsManager]
 
     def post(self, request, pk):
-        comment = (request.data.get('comment') or '').strip()
+        comment = _text(request.data.get('comment'))
         if not comment:
             return error('Remarks are required when returning an application.',
                          errors={'comment': ['Required.']}, status=400)
@@ -357,7 +362,7 @@ class LeaveCancelView(APIView):
             return error('Not found.', status=404)
         try:
             from .services import LeaveApplicationService
-            LeaveApplicationService.cancel(app, request, reason=request.data.get('reason', ''))
+            LeaveApplicationService.cancel(app, request, reason=_text(request.data.get('reason')))
             return success(message='Cancelled.')
         except Exception as e:
             return _service_error(e)
@@ -389,26 +394,28 @@ class PendingApprovalsView(APIView):
 
         # Sequential approval:
         #   * the Shift Supervisor (Level 1) sees a request as soon as it is submitted;
-        #   * the SIC (Level 2) sees it only after the Supervisor has approved it.
+        #   * the SIC (Level 2) sees it only after the Supervisor has approved it;
+        #   * a request from someone with no Supervisor and no SIC assigned goes to Admin,
+        #     so that it never sits in nobody's list.
         from .services import pending_level, level_approver
 
-        from django.db.models import Q
         l1_ids = list(emp.direct_reports.values_list('id', flat=True))
         l2_ids = list(emp.shift_incharge_for.values_list('id', flat=True))
         all_team_ids = list(set(l1_ids + l2_ids))
+        is_admin = request.user.is_hr_admin
 
-        # Team members, plus older applications that named this person as SIC
-        # at apply time. The loop below keeps only those waiting for this person.
-        candidates = _application_queryset().filter(
-            Q(employee_id__in=all_team_ids) | Q(shift_incharge=emp),
-            status='pending',
-        ).order_by('applied_at')
+        candidates = _application_queryset().filter(status='pending').order_by('applied_at')
+        if not is_admin:
+            # The loop below keeps only those waiting for this person.
+            candidates = candidates.filter(employee_id__in=all_team_ids)
 
         apps = []
         for app in candidates:
             approvals = list(app.approvals.all())
             lvl = pending_level(app, approvals)
             if lvl is None:
+                if is_admin and app.employee_id != emp.pk:
+                    apps.append(app)        # nobody assigned: Admin decides
                 continue
             approver = level_approver(app, lvl)
             if approver is not None and approver.pk == emp.pk:
@@ -443,7 +450,10 @@ class TeamCalendarView(APIView):
         month = request.query_params.get('month', timezone.now().strftime('%Y-%m'))
         include_pending = request.query_params.get('include_pending', '').lower() == 'true'
         try:
-            emp = request.user.employee_profile
+            try:
+                emp = request.user.employee_profile
+            except Exception:
+                emp = None          # e.g. an Admin login with no employee record
             from .services import get_team_calendar
             leaves = get_team_calendar(emp, month, user=request.user,
                                        include_pending=include_pending)
@@ -462,7 +472,7 @@ class TeamLeaveDashboardView(APIView):
         try:
             emp = request.user.employee_profile
         except Exception:
-            return error('No employee profile.', status=400)
+            emp = None              # an Admin login with no employee record still sees everyone
         year = request.query_params.get('year')
         try:
             year = int(year) if year else None
@@ -599,11 +609,11 @@ class LeavePDFView(APIView):
             if supervisor_approval and supervisor_approval.approver:
                 supervisor_name = signed_name(supervisor_approval)
                 if supervisor_approval.actioned_at:
-                    supervisor_date = supervisor_approval.actioned_at.strftime('%d %b %Y')
+                    supervisor_date = timezone.localtime(supervisor_approval.actioned_at).strftime('%d %b %Y')
             if sic_approval and sic_approval.approver:
                 sic_name = signed_name(sic_approval)
                 if sic_approval.actioned_at:
-                    sic_date = sic_approval.actioned_at.strftime('%d %b %Y')
+                    sic_date = timezone.localtime(sic_approval.actioned_at).strftime('%d %b %Y')
             elif app.shift_incharge:
                 sic_name = app.shift_incharge.full_name
 
@@ -745,15 +755,17 @@ class LeavePDFView(APIView):
                 [P('ADDRESS DURING LEAVE:', 7, color=MDGRAY),
                  P(getattr(app, "address_during_leave", None) or '—', 9)],
                 [P('TELEPHONE NO.:', 7, color=MDGRAY),
-                 P(getattr(app, "phone_during_leave", None) or '—', 9)],
+                 P(getattr(app, "contact_during_leave", None) or '—', 9)],
                 [P('SUPPORTING DOCUMENTS:', 7, color=MDGRAY),
                  P('Attached' if getattr(app, "attachment", None) else 'None', 9)],
             ]]
             story.append(cell_table(row6, [W*0.40, W*0.25, W*0.35]))
 
             # ROW 7: Date of Application | Time of Submission | Signature
-            applied_str = app.applied_at.strftime('%d %b %Y') if app.applied_at else '—'
-            time_str    = app.applied_at.strftime('%I:%M %p') if app.applied_at else '—'
+            # Show plant-local time (settings.TIME_ZONE), not UTC
+            applied_local = timezone.localtime(app.applied_at) if app.applied_at else None
+            applied_str = applied_local.strftime('%d %b %Y') if applied_local else '—'
+            time_str    = applied_local.strftime('%I:%M %p') if applied_local else '—'
             row7 = [[
                 [P('DATE OF APPLICATION:', 7, color=MDGRAY), P(applied_str, 10, bold=True)],
                 [P('TIME OF SUBMISSION:', 7, color=MDGRAY),  P(time_str, 10, bold=True)],

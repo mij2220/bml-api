@@ -137,6 +137,10 @@ FRONTEND_URL = "http://localhost:5173"
 
 # See base.py — days of notice an employee must give to cancel their own leave (0 = off)
 LEAVE_CANCEL_MIN_DAYS_BEFORE_START = int(os.environ.get("LEAVE_CANCEL_MIN_DAYS_BEFORE_START", "1"))
+# The SIC step applies to every leave type whenever the employee has a SIC
+# (client: "structure should be followed"). Set to 0 to use each leave type's own
+# "approval levels" setting instead.
+LEAVE_SIC_APPROVAL_ALWAYS = os.environ.get("LEAVE_SIC_APPROVAL_ALWAYS", "1") not in ("0", "false", "False", "")
 SPECTACULAR_SETTINGS = {
     "TITLE": "BookMyLeave API",
     "DESCRIPTION": "Multi-tenant SaaS Leave Management",

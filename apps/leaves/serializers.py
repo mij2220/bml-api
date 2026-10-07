@@ -149,12 +149,8 @@ class LeaveApplicationDetailSerializer(WorkflowFieldsMixin, serializers.ModelSer
 
     def get_waiting_for(self, obj):
         """Name of the person the application is waiting for (pending only)."""
-        if obj.status != 'pending':
-            return ''
-        from .services import pending_level, level_approver
-        lvl = pending_level(obj, self._approvals(obj))
-        approver = level_approver(obj, lvl) if lvl else None
-        return approver.full_name if approver else ''
+        from .services import waiting_for_name
+        return waiting_for_name(obj, self._approvals(obj))
 
     def get_department(self, obj):
         try:
@@ -201,7 +197,10 @@ class LeaveApplicationCreateSerializer(serializers.Serializer):
     duty_date_for_cd = serializers.DateField(required=False, allow_null=True)
     doctor_approval = serializers.BooleanField(default=False, required=False)
     shift_incharge_id = serializers.UUIDField(required=False, allow_null=True)
-    contact_during_leave = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    # No length limit here on purpose: the web form is free text and this field
+    # used to be ignored, so a long value must not start failing. The service
+    # keeps the first 20 characters (the column size).
+    contact_during_leave = serializers.CharField(required=False, allow_blank=True)
     address_during_leave = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, data):
@@ -231,7 +230,7 @@ class LeaveApplicationUpdateSerializer(serializers.Serializer):
     )
     duty_date_for_cd = serializers.DateField(required=False, allow_null=True)
     doctor_approval = serializers.BooleanField(required=False)
-    contact_during_leave = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    contact_during_leave = serializers.CharField(required=False, allow_blank=True)
     address_during_leave = serializers.CharField(required=False, allow_blank=True)
 
 
