@@ -156,6 +156,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
 
+# Leave rules
+# An employee can cancel their own pending/approved leave up to this many days
+# before it starts; after that the Shift Supervisor, SIC or Admin must do it.
+# 0 switches the limit off (cancel at any time, the behaviour before this setting).
+LEAVE_CANCEL_MIN_DAYS_BEFORE_START = int(os.environ.get('LEAVE_CANCEL_MIN_DAYS_BEFORE_START', '1'))
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'BookMyLeave API',
     'DESCRIPTION': 'Multi-tenant SaaS Leave Management',

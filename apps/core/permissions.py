@@ -31,8 +31,11 @@ class StandardPagination(PageNumberPagination):
         })
 
 class IsEmployee(BasePermission):
+    # Any signed-in staff account. 'rota_manager' is included so that role can
+    # sign in and use the shared read endpoints; it is NOT in IsManager, so it
+    # has no approval authority.
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role in ['employee','manager','hr_admin','super_admin']
+        return request.user.is_authenticated and request.user.role in ['employee','manager','hr_admin','super_admin','rota_manager']
 
 class IsManager(BasePermission):
     def has_permission(self, request, view):

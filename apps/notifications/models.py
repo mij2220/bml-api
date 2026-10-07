@@ -6,6 +6,7 @@ NOTIFICATION_TYPE_CHOICES = [
     ("leave_approved", "Leave Approved"),
     ("leave_rejected", "Leave Rejected"),
     ("leave_cancelled", "Leave Cancelled"),
+    ("leave_returned", "Leave Returned"),
     ("leave_escalated", "Leave Escalated"),
     ("leave_reminder", "Leave Pending Reminder"),
     ("replacement_needed", "Replacement Needed"),

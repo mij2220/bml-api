@@ -21,12 +21,14 @@ LEAVE_STATUS_CHOICES = [
     ('rejected', 'Rejected'),
     ('cancelled', 'Cancelled'),
     ('expired', 'Expired'),   # Auto-set by nightly task when leave dates pass without approval
+    ('returned', 'Returned'),  # Sent back to the employee with remarks; employee edits and resubmits
 ]
 
 APPROVAL_ACTION_CHOICES = [
     ('approved', 'Approved'),
     ('rejected', 'Rejected'),
     ('delegated', 'Delegated'),
+    ('returned', 'Returned'),
 ]
 
 HALF_DAY_PERIOD_CHOICES = [
@@ -208,6 +210,17 @@ class LeaveApproval(BaseModel):
         'employees.Employee', null=True, blank=True,
         on_delete=models.SET_NULL, related_name='delegated_approvals'
     )
+    # True once the employee has resubmitted after a "Return": the row stays as
+    # history but no longer counts towards the current approval round.
+    #
+    # db_default keeps the default inside the database as well, so the previous
+    # version of the code (which does not know these columns) can still insert
+    # rows. That is what makes a code rollback safe without touching the data.
+    is_superseded = models.BooleanField(default=False, db_default=False)
+    # Shared logins (e.g. the Shift Engineers' common ID): the person who actually
+    # took the action types their own name and P.No. as a signature.
+    signer_name = models.CharField(max_length=150, blank=True, default='', db_default='')
+    signer_p_number = models.CharField(max_length=50, blank=True, default='', db_default='')
 
     class Meta:
         ordering = ['level', 'actioned_at']

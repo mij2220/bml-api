@@ -19,7 +19,7 @@ class UserMeSerializer(serializers.ModelSerializer):
     designation_name = serializers.SerializerMethodField()
     class Meta:
         model = User
-        fields = ['id','email','role','must_change_password','employee_id','p_number','full_name','department','designation_name']
+        fields = ['id','email','role','must_change_password','is_shared_account','employee_id','p_number','full_name','department','designation_name']
         read_only_fields = fields
     def get_employee_id(self, obj):
         try: return str(obj.employee_profile.employee_id)

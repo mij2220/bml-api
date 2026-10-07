@@ -30,13 +30,14 @@ class EmployeeListSerializer(serializers.ModelSerializer):
     designation_name = serializers.CharField(source='designation.name', read_only=True)
     manager_name = serializers.CharField(source='reporting_manager.full_name', read_only=True, default=None)
     reporting_manager_id = serializers.SerializerMethodField()
+    is_shared_account = serializers.BooleanField(source='user.is_shared_account', read_only=True)
 
     def get_reporting_manager_id(self, obj):
         return str(obj.reporting_manager_id) if obj.reporting_manager_id else None
 
     class Meta:
         model = Employee
-        fields = ['id','employee_id','p_number','full_name','email','role','department_name',
+        fields = ['id','employee_id','p_number','full_name','email','role','is_shared_account','department_name',
                   'designation_name','manager_name','reporting_manager_id', 'shift_incharge_id',
                   'status','employment_type','profile_picture','created_at']
 
@@ -67,7 +68,10 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
             return None
 
     email = serializers.EmailField(source='user.email', read_only=True)
+    # role and is_shared_account live on the User; Admin changes them through
+    # EmployeeDetailView.patch (see _apply_account_changes in views.py).
     role = serializers.CharField(source='user.role', read_only=True)
+    is_shared_account = serializers.BooleanField(source='user.is_shared_account', read_only=True)
     department = DepartmentSerializer(read_only=True)
     designation = DesignationSerializer(read_only=True)
     branch = BranchSerializer(read_only=True)
@@ -89,7 +93,7 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
         return None
     class Meta:
         model = Employee
-        fields = ['id','employee_id','p_number','full_name','email','role','cnic','gender','date_of_birth',
+        fields = ['id','employee_id','p_number','full_name','email','role','is_shared_account','cnic','gender','date_of_birth',
                   'phone','joining_date','experience_start_date','experience_display','experience_years','experience_tier','employment_type','salary_grade', 'account_code','department','designation',
                   'branch','reporting_manager','reporting_manager_id','shift_incharge','shift_incharge_id','status','profile_picture','profile_picture_url','created_at','updated_at']
 
@@ -149,14 +153,15 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
 class EmployeeCreateSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(write_only=True, required=False)
-    role = serializers.ChoiceField(choices=['employee','manager','hr_admin'], default='employee')
+    role = serializers.ChoiceField(choices=['employee','manager','hr_admin','rota_manager'], default='employee')
+    is_shared_account = serializers.BooleanField(required=False, default=False)
     department_id = serializers.UUIDField(required=True)
     designation_id = serializers.UUIDField(required=True)
     branch_id = serializers.UUIDField(required=False, allow_null=True)
     reporting_manager_id = serializers.UUIDField(required=False, allow_null=True)
     class Meta:
         model = Employee
-        fields = ['employee_id','p_number','full_name','email','password','role','cnic','gender',
+        fields = ['employee_id','p_number','full_name','email','password','role','is_shared_account','cnic','gender',
                   'date_of_birth','phone','joining_date','experience_start_date','employment_type','salary_grade',
                   'department_id','designation_id','branch_id','reporting_manager_id']
     def validate_email(self, value):
@@ -168,11 +173,13 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
         email = validated_data.pop('email')
         password = validated_data.pop('password', s.token_urlsafe(12))
         role = validated_data.pop('role', 'employee')
+        is_shared = validated_data.pop('is_shared_account', False)
         department_id = validated_data.pop('department_id')
         designation_id = validated_data.pop('designation_id')
         branch_id = validated_data.pop('branch_id', None)
         manager_id = validated_data.pop('reporting_manager_id', None)
-        user = User.objects.create_user(email=email, password=password, role=role, must_change_password=True)
+        user = User.objects.create_user(email=email, password=password, role=role,
+                                        must_change_password=True, is_shared_account=is_shared)
         return Employee.objects.create(user=user, department_id=department_id,
                                        designation_id=designation_id, branch_id=branch_id,
                                        reporting_manager_id=manager_id, **validated_data)

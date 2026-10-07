@@ -55,6 +55,41 @@ class EmployeeListCreateView(APIView):
         log_action(request, 'employee.created', 'Employee', emp.id, {'employee_id': emp.employee_id})
         return success(EmployeeDetailSerializer(emp).data, 'Employee created.', status=201)
 
+ASSIGNABLE_ROLES = ('employee', 'manager', 'rota_manager', 'hr_admin', 'super_admin')
+# What a person may change on their own profile (Settings page). Everything
+# else — unit, designation, Supervisor, SIC, dates, status — is Admin-only, so
+# nobody can re-point their own approval chain.
+SELF_EDITABLE_FIELDS = ('full_name', 'phone', 'date_of_birth', 'profile_picture')
+
+
+def _to_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ('true', '1', 'yes', 'on')
+
+
+def _account_changes(request, emp):
+    """Read `role` / `is_shared_account` from the request (they live on the User,
+    not the Employee). Returns (changes, error_message)."""
+    changes = {}
+    user = emp.user
+    if 'role' in request.data:
+        role = str(request.data.get('role') or '').strip()
+        if role and role != user.role:
+            if role not in ASSIGNABLE_ROLES:
+                return None, 'Unknown role.'
+            if 'super_admin' in (role, user.role) and request.user.role != 'super_admin':
+                return None, 'Only a Super Admin can give or remove the Super Admin role.'
+            if user.pk == request.user.pk:
+                return None, 'You cannot change your own role.'
+            changes['role'] = role
+    if 'is_shared_account' in request.data:
+        shared = _to_bool(request.data.get('is_shared_account'))
+        if shared != user.is_shared_account:
+            changes['is_shared_account'] = shared
+    return changes, None
+
+
 class EmployeeDetailView(APIView):
     permission_classes = [IsEmployee]
     def get(self, request, pk):
@@ -70,11 +105,22 @@ class EmployeeDetailView(APIView):
             emp = Employee.objects.get(pk=pk)
         except Employee.DoesNotExist:
             return error('Employee not found.', status=404)
+        account_changes, problem = _account_changes(request, emp)
+        if problem:
+            return error(problem, errors={'role': [problem]}, status=400)
         s = EmployeeDetailSerializer(emp, data=request.data, partial=True)
         if not s.is_valid():
             return error('Validation failed.', errors=s.errors, status=400)
         s.save()
-        return success(s.data, 'Employee updated.')
+        if account_changes:
+            before = {k: getattr(emp.user, k) for k in account_changes}
+            for k, v in account_changes.items():
+                setattr(emp.user, k, v)
+            emp.user.save(update_fields=list(account_changes.keys()))
+            log_action(request, 'employee.account_changed', 'Employee', emp.id,
+                       {'before': before, 'after': account_changes})
+        emp = Employee.objects.select_related('user').get(pk=pk)
+        return success(EmployeeDetailSerializer(emp).data, 'Employee updated.')
 
 class MeEmployeeView(APIView):
     permission_classes = [IsEmployee]
@@ -94,6 +140,12 @@ class MeEmployeeView(APIView):
         data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
         if request.FILES:
             data.update(request.FILES)
+        # Admins keep full access to their own record; everyone else can only
+        # change their personal details here.
+        if not request.user.is_hr_admin:
+            for key in list(data.keys()):
+                if key not in SELF_EDITABLE_FIELDS:
+                    data.pop(key)
         s = EmployeeDetailSerializer(
             emp, data=data, partial=True,
             context={'request': request}

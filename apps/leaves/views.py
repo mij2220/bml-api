@@ -8,8 +8,26 @@ from .models import LeaveApplication, LeaveApproval, LeaveType, HolidayCalendar,
 from .serializers import (
     LeaveTypeSerializer, LeaveApplicationListSerializer,
     LeaveApplicationDetailSerializer, LeaveApplicationCreateSerializer,
+    LeaveApplicationUpdateSerializer,
     HolidayCalendarSerializer, TeamCalendarSerializer,
 )
+
+
+def _service_error(exc):
+    """Turn a service exception into the API's standard error response."""
+    from .services import LeavePermissionError, LeaveValidationError
+    if isinstance(exc, LeavePermissionError):
+        return error(str(exc), status=403)
+    if isinstance(exc, LeaveValidationError) and exc.field:
+        return error(str(exc), errors={exc.field: [str(exc)]}, status=400)
+    return error(str(exc), status=400)
+
+
+def _application_queryset():
+    return LeaveApplication.objects.select_related(
+        'employee', 'employee__department', 'employee__reporting_manager',
+        'employee__shift_incharge', 'shift_incharge', 'leave_type',
+    ).prefetch_related('approvals__approver')
 
 
 class LeaveTypeListCreateView(APIView):
@@ -71,9 +89,7 @@ class LeaveApplicationListView(APIView):
 
     def get_queryset(self, request):
         user = request.user
-        qs = LeaveApplication.objects.select_related(
-            'employee', 'employee__department', 'leave_type'
-        ).prefetch_related('approvals__approver')
+        qs = _application_queryset()
 
         # ?mine=true always returns only the logged-in employee's own leaves
         # Used by My Leaves page so managers/HR see their own leaves, not team's
@@ -98,23 +114,58 @@ class LeaveApplicationListView(APIView):
                 return qs.filter(employee_id__in=team_ids)
             except Exception:
                 return qs.none()
+        if user.role == 'rota_manager':
+            # Read-only picture of the Rota Manager's own unit (department)
+            try:
+                emp = user.employee_profile
+                if not emp.department_id:
+                    return qs.filter(employee=emp)
+                return qs.filter(employee__department_id=emp.department_id)
+            except Exception:
+                return qs.none()
         try:
             return qs.filter(employee=user.employee_profile)
         except Exception:
             return qs.none()
 
     def get(self, request):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from django.db.models import Q
         qs = self.get_queryset(request)
-        status_f = request.query_params.get('status')
-        if status_f:
-            qs = qs.filter(status=status_f)
-        year_f = request.query_params.get('year')
-        if year_f:
-            qs = qs.filter(start_date__year=year_f)
+        params = request.query_params
+        try:
+            status_f = params.get('status')
+            if status_f:
+                # one status, or several separated by commas (e.g. approved,pending)
+                wanted = [x.strip() for x in status_f.split(',') if x.strip()]
+                qs = qs.filter(status__in=wanted)
+            year_f = params.get('year')
+            if year_f:
+                qs = qs.filter(start_date__year=year_f)
+            employee_f = params.get('employee')
+            if employee_f:
+                qs = qs.filter(employee_id=employee_f)
+            # Leaves that overlap a date range (YYYY-MM-DD)
+            date_from, date_to = params.get('date_from'), params.get('date_to')
+            if date_from:
+                qs = qs.filter(end_date__gte=date_from)
+            if date_to:
+                qs = qs.filter(start_date__lte=date_to)
+        except (DjangoValidationError, ValueError, TypeError):
+            return error('Invalid filter value.', status=400)
+        search = (params.get('search') or '').strip()
+        if search:
+            qs = qs.filter(
+                Q(reference_number__icontains=search)
+                | Q(employee__full_name__icontains=search)
+                | Q(employee__employee_id__icontains=search)
+                | Q(leave_type__name__icontains=search)
+                | Q(leave_type__code__iexact=search)
+            )
         paginator = StandardPagination()
         page = paginator.paginate_queryset(qs, request)
         return paginator.get_paginated_response(
-            LeaveApplicationListSerializer(page, many=True).data
+            LeaveApplicationListSerializer(page, many=True, context={'request': request}).data
         )
 
     def post(self, request):
@@ -155,9 +206,11 @@ class LeaveApplicationListView(APIView):
                 shift_incharge_id=d.get('shift_incharge_id'),
                 attachment=request.FILES.get('attachment'),
                 request=request,
+                contact_during_leave=d.get('contact_during_leave', ''),
+                address_during_leave=d.get('address_during_leave', ''),
             )
             return success(
-                LeaveApplicationDetailSerializer(application).data,
+                LeaveApplicationDetailSerializer(application, context={'request': request}).data,
                 'Leave application submitted.',
                 status=201,
             )
@@ -168,14 +221,67 @@ class LeaveApplicationListView(APIView):
 class LeaveApplicationDetailView(APIView):
     permission_classes = [IsEmployee]
 
-    def get(self, request, pk):
+    def _get(self, pk):
         try:
-            app = LeaveApplication.objects.select_related(
-                'employee', 'leave_type'
-            ).prefetch_related('approvals__approver').get(pk=pk)
-            return success(LeaveApplicationDetailSerializer(app).data)
+            return _application_queryset().get(pk=pk)
         except LeaveApplication.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        app = self._get(pk)
+        if app is None:
             return error('Application not found.', status=404)
+        from .services import can_view_application
+        if not can_view_application(request.user, app):
+            return error('You do not have access to this leave application.', status=403)
+        return success(LeaveApplicationDetailSerializer(app, context={'request': request}).data)
+
+    def patch(self, request, pk):
+        """Employee edits their own application. Allowed while it is still waiting
+        for the Supervisor, or after it was returned (saving then resubmits it)."""
+        app = self._get(pk)
+        if app is None:
+            return error('Application not found.', status=404)
+        try:
+            emp = request.user.employee_profile
+        except Exception:
+            return error('No employee profile found.', status=400)
+
+        s = LeaveApplicationUpdateSerializer(data=request.data, partial=True)
+        if not s.is_valid():
+            return error('Validation failed.', errors=s.errors, status=400)
+        d = dict(s.validated_data)
+
+        if 'leave_type_id' in d:
+            try:
+                d['leave_type'] = LeaveType.objects.get(pk=d.pop('leave_type_id'), is_active=True)
+            except LeaveType.DoesNotExist:
+                return error('Invalid leave type.', status=400)
+
+        start = d.get('start_date', app.start_date)
+        end = d.get('end_date', app.end_date)
+        if start > end:
+            return error('Validation failed.',
+                         errors={'end_date': ['End date must be after start date.']}, status=400)
+
+        was_returned = app.status == 'returned'
+        try:
+            from .services import LeaveApplicationService
+            app = LeaveApplicationService.update_application(app, emp, d, request)
+        except Exception as e:
+            return _service_error(e)
+        app = self._get(pk)
+        return success(
+            LeaveApplicationDetailSerializer(app, context={'request': request}).data,
+            'Leave application resubmitted.' if was_returned else 'Leave application updated.',
+        )
+
+
+def _signer(request):
+    return {
+        'signer_name': request.data.get('signer_name', ''),
+        'signer_p_number': request.data.get('signer_p_number', ''),
+    }
 
 
 class LeaveApproveView(APIView):
@@ -189,10 +295,13 @@ class LeaveApproveView(APIView):
             return error('Not found.', status=404)
         try:
             from .services import LeaveApplicationService
-            app = LeaveApplicationService.approve(app, approver, request.data.get('comment', ''), request)
-            return success(LeaveApplicationDetailSerializer(app).data, 'Approved.')
+            app = LeaveApplicationService.approve(
+                app, approver, request.data.get('comment', ''), request, **_signer(request))
+            app = _application_queryset().get(pk=app.pk)
+            return success(
+                LeaveApplicationDetailSerializer(app, context={'request': request}).data, 'Approved.')
         except Exception as e:
-            return error(str(e), status=400)
+            return _service_error(e)
 
 
 class LeaveRejectView(APIView):
@@ -209,10 +318,33 @@ class LeaveRejectView(APIView):
             return error('Not found.', status=404)
         try:
             from .services import LeaveApplicationService
-            app = LeaveApplicationService.reject(app, approver, comment, request)
+            app = LeaveApplicationService.reject(app, approver, comment, request, **_signer(request))
             return success(message='Rejected.')
         except Exception as e:
-            return error(str(e), status=400)
+            return _service_error(e)
+
+
+class LeaveReturnView(APIView):
+    """POST /leaves/<pk>/return/ — send the application back to the employee with remarks."""
+    permission_classes = [IsManager]
+
+    def post(self, request, pk):
+        comment = (request.data.get('comment') or '').strip()
+        if not comment:
+            return error('Remarks are required when returning an application.',
+                         errors={'comment': ['Required.']}, status=400)
+        try:
+            app = LeaveApplication.objects.get(pk=pk)
+            approver = request.user.employee_profile
+        except Exception:
+            return error('Not found.', status=404)
+        try:
+            from .services import LeaveApplicationService
+            LeaveApplicationService.return_to_employee(
+                app, approver, comment, request, **_signer(request))
+            return success(message='Returned to the employee.')
+        except Exception as e:
+            return _service_error(e)
 
 
 class LeaveCancelView(APIView):
@@ -225,10 +357,10 @@ class LeaveCancelView(APIView):
             return error('Not found.', status=404)
         try:
             from .services import LeaveApplicationService
-            LeaveApplicationService.cancel(app, request)
+            LeaveApplicationService.cancel(app, request, reason=request.data.get('reason', ''))
             return success(message='Cancelled.')
         except Exception as e:
-            return error(str(e), status=400)
+            return _service_error(e)
 
 
 class LeaveAttachmentView(APIView):
@@ -255,29 +387,34 @@ class PendingApprovalsView(APIView):
         except Exception:
             return error('No employee profile.', status=400)
 
-        # Parallel approval: both L1 and L2 see all pending leaves for their team
-        # from the moment the leave is submitted.
-        # L1 team = direct_reports, L2 team = shift_incharge_for
+        # Sequential approval:
+        #   * the Shift Supervisor (Level 1) sees a request as soon as it is submitted;
+        #   * the SIC (Level 2) sees it only after the Supervisor has approved it.
+        from .services import pending_level, level_approver
+
+        from django.db.models import Q
         l1_ids = list(emp.direct_reports.values_list('id', flat=True))
         l2_ids = list(emp.shift_incharge_for.values_list('id', flat=True))
         all_team_ids = list(set(l1_ids + l2_ids))
 
-        if not all_team_ids:
-            return success([])
-
-        from django.db.models import Q
-        # Get pending leaves for this manager's team
-        # Exclude leaves this manager has already actioned
-        already_actioned = list(
-            LeaveApproval.objects.filter(approver=emp).values_list('application_id', flat=True)
-        )
-        apps = LeaveApplication.objects.filter(
+        # Team members, plus older applications that named this person as SIC
+        # at apply time. The loop below keeps only those waiting for this person.
+        candidates = _application_queryset().filter(
+            Q(employee_id__in=all_team_ids) | Q(shift_incharge=emp),
             status='pending',
-            employee_id__in=all_team_ids,
-        ).exclude(
-            id__in=already_actioned
-        ).select_related('employee', 'leave_type').order_by('applied_at')
-        return success(LeaveApplicationListSerializer(apps, many=True).data)
+        ).order_by('applied_at')
+
+        apps = []
+        for app in candidates:
+            approvals = list(app.approvals.all())
+            lvl = pending_level(app, approvals)
+            if lvl is None:
+                continue
+            approver = level_approver(app, lvl)
+            if approver is not None and approver.pk == emp.pk:
+                apps.append(app)
+        return success(
+            LeaveApplicationListSerializer(apps, many=True, context={'request': request}).data)
 
 
 class TeamCalendarView(APIView):
@@ -304,13 +441,36 @@ class TeamCalendarView(APIView):
         except Exception:
             pass
         month = request.query_params.get('month', timezone.now().strftime('%Y-%m'))
+        include_pending = request.query_params.get('include_pending', '').lower() == 'true'
         try:
             emp = request.user.employee_profile
             from .services import get_team_calendar
-            leaves = get_team_calendar(emp, month)
+            leaves = get_team_calendar(emp, month, user=request.user,
+                                       include_pending=include_pending)
             return success(TeamCalendarSerializer(leaves, many=True).data)
         except Exception as e:
             return success([])
+
+
+class TeamLeaveDashboardView(APIView):
+    """GET /leaves/team-dashboard/?search=&year=
+    Employee Leave Dashboard for the Shift Supervisor / SIC: every employee under
+    them with leave availed, balance and current leave status."""
+    permission_classes = [IsManager]
+
+    def get(self, request):
+        try:
+            emp = request.user.employee_profile
+        except Exception:
+            return error('No employee profile.', status=400)
+        year = request.query_params.get('year')
+        try:
+            year = int(year) if year else None
+        except ValueError:
+            return error('Year must be a number.', status=400)
+        from .services import get_team_leave_dashboard
+        return success(get_team_leave_dashboard(
+            emp, request.user, year=year, search=request.query_params.get('search', '')))
 
 
 class HolidayCalendarView(APIView):
@@ -347,6 +507,10 @@ class LeavePDFView(APIView):
             ).prefetch_related('approvals__approver').get(pk=pk)
         except LeaveApplication.DoesNotExist:
             return error('Application not found.', status=404)
+
+        from .services import can_view_application
+        if not can_view_application(request.user, app):
+            return error('You do not have access to this leave application.', status=403)
 
         try:
             from io import BytesIO
@@ -413,20 +577,31 @@ class LeavePDFView(APIView):
                 return '[X]' if checked else '[ ]'
 
             # ── Helper: get approval data ──
-            approvals = list(app.approvals.all())
+            # Only the current approval round counts: rows from before a
+            # "Return" + resubmission are history, and a "returned" row is not a decision.
+            approvals = [a for a in app.approvals.all()
+                         if not a.is_superseded and a.action in ('approved', 'rejected')]
             supervisor_approval = next((a for a in approvals if a.level == 1), None)
             sic_approval = next((a for a in approvals if a.level == 2), None)
+
+            def signed_name(a):
+                # Shared login: show the person who typed their name and P.No.
+                if a.signer_name:
+                    if a.signer_p_number:
+                        return f'{a.signer_name} (P.No. {a.signer_p_number})'
+                    return a.signer_name
+                return a.approver.full_name
 
             supervisor_name = '—'
             supervisor_date = ''
             sic_name = '—'
             sic_date = ''
             if supervisor_approval and supervisor_approval.approver:
-                supervisor_name = supervisor_approval.approver.full_name
+                supervisor_name = signed_name(supervisor_approval)
                 if supervisor_approval.actioned_at:
                     supervisor_date = supervisor_approval.actioned_at.strftime('%d %b %Y')
             if sic_approval and sic_approval.approver:
-                sic_name = sic_approval.approver.full_name
+                sic_name = signed_name(sic_approval)
                 if sic_approval.actioned_at:
                     sic_date = sic_approval.actioned_at.strftime('%d %b %Y')
             elif app.shift_incharge:
@@ -593,7 +768,8 @@ class LeavePDFView(APIView):
             nwp_box = checkbox(is_approved and not is_paid)
 
             status_color = GREEN if is_approved else (RED if is_rejected else AMBER)
-            status_text  = app.status.upper()
+            from .services import get_stage, get_stage_label
+            status_text  = get_stage_label(get_stage(app, approvals)).upper()
 
             rejection_reason = ''
             if is_rejected:

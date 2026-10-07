@@ -6,6 +6,7 @@ ROLE_CHOICES = [
     ("manager", "Manager"),
     ("hr_admin", "HR Admin"),
     ("super_admin", "Super Admin"),
+    ("rota_manager", "Rota Manager"),  # read-only view of one unit's leave; no approval authority
 ]
 
 
@@ -32,6 +33,11 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="employee")
     must_change_password = models.BooleanField(default=True)
+    # A login used by several people (e.g. the Shift Engineers' common ID).
+    # Approvals made from it must carry the acting person's name and P.No.
+    # db_default: the database itself fills in False, so the previous version of
+    # the code keeps working if the code is ever rolled back.
+    is_shared_account = models.BooleanField(default=False, db_default=False)
     last_login_ip = models.GenericIPAddressField(null=True, blank=True)
     password_reset_token = models.CharField(max_length=200, blank=True)
     password_reset_expires = models.DateTimeField(null=True, blank=True)
