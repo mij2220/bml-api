@@ -4,6 +4,7 @@ module settings and gazetted holidays. HR Admin / Super Admin only.
 """
 import csv
 import io
+import re
 from datetime import date, time
 
 from django.db import transaction
@@ -107,6 +108,9 @@ class SectionAdminViewSet(_Base):
             if obj.pattern == 'M,M,E,E,N,N,O,O':
                 for i, (g, off) in enumerate(DEFAULT_GROUPS):
                     ShiftGroup.objects.get_or_create(section=obj, name=g, defaults={'offset': off, 'order': i})
+            else:
+                # any other rotation (e.g. General shift G,G,G,G,G,O,O): one group to start with
+                ShiftGroup.objects.get_or_create(section=obj, name='A', defaults={'offset': 0, 'order': 0})
 
     def destroy(self, request, *a, **k):
         obj = self.get_object()
@@ -334,7 +338,11 @@ class MembersImportView(APIView):
         for n, raw in enumerate(reader, start=2):
             r = norm(raw)
             pno = r.get('p_number') or r.get('pno') or r.get('p_no')
-            emp = Employee.objects.filter(p_number=pno).first() if pno else None
+            emp = None
+            if pno:
+                # P.No. as typed, or the same number with/without leading zeros
+                emp = (Employee.objects.filter(p_number=pno).first()
+                       or Employee.objects.filter(p_number__regex=r'^0*' + re.escape(pno.lstrip('0') or '0') + r'$').first())
             g = groups.get((r.get('group') or '').upper())
             post_code = (r.get('post') or '').upper()
             post = posts.get(post_code)

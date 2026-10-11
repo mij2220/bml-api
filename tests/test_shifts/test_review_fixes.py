@@ -107,3 +107,24 @@ def test_future_member_has_no_tabs(plant, client_for):
         'employee': str(emp.pk), 'group': str(plant.groups['A'].pk), 'effective_from': '2099-01-01'}, format='json')
     keys = {m['key'] for m in client_for(emp).get('/api/v1/auth/me/').data['data']['modules']}
     assert keys == {'leave'}
+
+
+def test_import_matches_pno_with_leading_zeros(plant, client_for):
+    emp = plant.org.person('Zero Padded')
+    emp.p_number = '00273'; emp.save()
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    f = SimpleUploadedFile('m.csv', b'p_number,name,group,post,trainee,from\n273,ZERO,A,,yes,2026-10-01\n9999,NOBODY,A,,,2026-10-01\n')
+    r = client_for(plant.org.admin).post(f'{API}/admin/members-import/', {'section': str(plant.section.pk), 'file': f, 'dry_run': '0'})
+    assert r.status_code == 200, r.data
+    assert r.data['data']['added'] == 1 and len(r.data['data']['problems']) == 1
+    from apps.shifts.models import GroupMembership
+    m = GroupMembership.objects.get(employee=emp)
+    assert m.group.name == 'A' and m.is_trainee
+
+
+def test_general_shift_section_gets_one_group(plant, client_for):
+    r = client_for(plant.org.admin).post(f'{API}/admin/sections/', {
+        'department': str(plant.org.unit.pk), 'name': 'General shift', 'pattern': 'G,G,G,G,G,O,O',
+        'pattern_anchor': '2026-10-05'}, format='json')
+    assert r.status_code == 201
+    assert [g['name'] for g in r.data['data']['groups']] == ['A']
