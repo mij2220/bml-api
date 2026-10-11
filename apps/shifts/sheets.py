@@ -15,6 +15,49 @@ class SheetError(Exception):
     pass
 
 
+def _uuid(v, what='person'):
+    import uuid
+    if v in (None, ''):
+        return None
+    try:
+        return uuid.UUID(str(v))
+    except (ValueError, TypeError, AttributeError):
+        raise SheetError(f'Unknown {what}.')
+
+
+def _text(v, n):
+    if v is None:
+        return ''
+    if not isinstance(v, (str, int, float)):
+        raise SheetError('Text expected.')
+    return str(v)[:n]
+
+
+def lock_row(sheet):
+    """Take the sheet's row lock (inside a transaction) and refresh its status,
+    so two people cannot, say, edit and lock the same day at the same moment."""
+    from .models import DailySheet
+    fresh = DailySheet.objects.select_for_update().get(pk=sheet.pk)
+    for f in ('status', 'reviewed_by_id', 'reviewed_at', 'locked_by_id', 'locked_at'):
+        setattr(sheet, f, getattr(fresh, f))
+    return sheet
+
+
+def lock_section(section):
+    from .models import Section
+    Section.objects.select_for_update().filter(pk=section.pk).first()
+
+
+def check_code(entry, code):
+    """The same rules for the sheet and for corrections."""
+    if not isinstance(code, str) or code not in CODES:
+        raise SheetError('Unknown attendance code.')
+    if entry.shift_code == 'O' and code != 'O':
+        raise SheetError('This person is off today. Record work on an off day as extra hours.')
+    if entry.shift_code != 'O' and code == 'O':
+        raise SheetError('This person is on the roster today; choose Present, a leave code or Absent.')
+
+
 def gh_dates(start, end):
     """Gazetted holidays (A-16): non-optional days in the default holiday calendar
     (or in every calendar when none is marked default)."""
@@ -60,6 +103,9 @@ def working_shifts(section):
 
 def _default_for(member, rostered, gh, leave, types, cmap):
     """(code, hours, source, leave_application) the sheet starts with."""
+    if leave is not None and rostered != 'O' and getattr(leave, 'is_half_day', False):
+        # half a shift on leave: present for the other half
+        return 'P', shift_hours(types, rostered) / 2, 'leave', leave
     if leave is not None:
         lc = cmap.get((leave.leave_type.code or '').upper(), 'V')
         return lc, Decimal('0'), 'leave', leave
@@ -83,7 +129,10 @@ def sync_sheet(sheet):
     """Bring an open sheet in line with the roster and approved leave.
     Entries changed by hand are left alone. Locked sheets are never touched."""
     from .models import AttendanceEntry, ShiftSubmission
-    if sheet.status == 'locked':
+    if sheet.status != 'open':
+        return sheet          # reviewed / locked: what was reviewed stays as it was
+    lock_row(sheet)
+    if sheet.status != 'open':
         return sheet
     section, day = sheet.section, sheet.date
     members = roster.members_on(section, day)
@@ -105,8 +154,11 @@ def sync_sheet(sheet):
                 shift_code=rostered, code=code, hours=hours, source=source, leave_application=la, order=i)
             continue
         changed = []
-        for f, v in (('group_id', m.group_id), ('post_id', m.post_id), ('is_trainee', m.is_trainee),
-                     ('order', i), ('shift_code', rostered)):
+        fields = [('group_id', m.group_id), ('post_id', m.post_id), ('is_trainee', m.is_trainee), ('order', i)]
+        if e.source != 'manual':
+            # rows changed by hand keep their shift, code and hours exactly as the marker left them
+            fields.append(('shift_code', rostered))
+        for f, v in fields:
             if getattr(e, f) != v:
                 setattr(e, f, v); changed.append(f.replace('_id', ''))
         if e.source != 'manual':
@@ -114,15 +166,14 @@ def sync_sheet(sheet):
                 cur = getattr(e, f)
                 if (cur.pk if hasattr(cur, 'pk') else cur) != (v.pk if hasattr(v, 'pk') else v):
                     setattr(e, f, v); changed.append(f)
-        elif e.code in CODES and is_present(e.code) and e.shift_code != 'O':
-            # a manual "present" keeps the shift's hours if the shift changed
-            h = shift_hours(types, e.shift_code)
-            if e.hours != h:
-                e.hours = h; changed.append('hours')
         if changed:
             e.save(update_fields=list(set(changed)) + ['updated_at'])
-    # people who left the section: drop their untouched rows
-    sheet.entries.exclude(employee_id__in=keep).filter(source__in=['roster', 'leave']).delete()
+    # people who are no longer members that day: drop their untouched rows, but
+    # only for today or later, and never when extra hours are recorded for them
+    if day >= timezone.localdate():
+        with_extras = set(sheet.extras.values_list('employee_id', flat=True))
+        (sheet.entries.exclude(employee_id__in=keep | with_extras)
+         .filter(source__in=['roster', 'leave']).delete())
     for code in working_shifts(section):
         ShiftSubmission.objects.get_or_create(sheet=sheet, shift_code=code)
     return sheet
@@ -143,23 +194,21 @@ def _unreview(sheet):
         sheet.status = 'open'
         sheet.reviewed_by = None
         sheet.reviewed_at = None
-        sheet.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        sheet.reviewed_signer_name = sheet.reviewed_signer_p_number = ''
+        sheet.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'reviewed_signer_name',
+                                  'reviewed_signer_p_number', 'updated_at'])
 
 
 @transaction.atomic
 def set_entry(sheet, entry, code, note=None):
+    lock_row(sheet)
     editable(sheet)
-    if code not in CODES:
-        raise SheetError('Unknown attendance code.')
-    if entry.shift_code == 'O' and code != 'O':
-        raise SheetError('This person is off today. Record work on an off day as extra hours.')
-    if entry.shift_code != 'O' and code == 'O':
-        raise SheetError('This person is on the roster today; choose Present, a leave code or Absent.')
+    check_code(entry, code)
     types = shift_types(sheet.section)
     entry.code = code
     entry.hours = shift_hours(types, entry.shift_code) if is_present(code) and entry.shift_code != 'O' else Decimal('0')
     if note is not None:
-        entry.note = note[:300]
+        entry.note = _text(note, 300)
     entry.source = 'manual'
     if kind(code) != 'leave':
         entry.leave_application = None
@@ -168,9 +217,11 @@ def set_entry(sheet, entry, code, note=None):
     return entry
 
 
+@transaction.atomic
 def set_note(sheet, entry, note):
+    lock_row(sheet)
     editable(sheet)
-    entry.note = (note or '')[:300]
+    entry.note = _text(note, 300)
     entry.save(update_fields=['note', 'updated_at'])
     return entry
 
@@ -180,6 +231,8 @@ def validate_extra(sheet, data):
     try:
         hours = Decimal(str(data.get('hours')))
     except Exception:
+        raise SheetError('Hours must be a number.')
+    if not hours.is_finite():
         raise SheetError('Hours must be a number.')
     if hours <= 0 or hours > 24:
         raise SheetError('Hours must be more than 0 and at most 24.')
@@ -191,19 +244,27 @@ def validate_extra(sheet, data):
     k = data.get('kind') or 'normal'
     if k not in ('normal', 'training', 'callout'):
         raise SheetError('Unknown type of extra hours.')
-    emp = Employee.objects.filter(pk=data.get('employee')).first()
-    if emp is None:
-        raise SheetError('Choose the person.')
+    eid = _uuid(data.get('employee'))
+    # only people of this section (on the sheet that day, or members that day)
+    on_sheet = set(sheet.entries.values_list('employee_id', flat=True))
+    member_ids = {m.employee_id for m in roster.members_on(sheet.section, sheet.date)}
+    if eid is None or eid not in (on_sheet | member_ids):
+        raise SheetError('Choose a person from this section.')
+    emp = Employee.objects.get(pk=eid)
     cov = None
-    if data.get('covering'):
-        cov = Employee.objects.filter(pk=data.get('covering')).first()
+    cid = _uuid(data.get('covering'))
+    if cid is not None:
+        if cid not in on_sheet:
+            raise SheetError('The person covered must be on this day\'s sheet.')
+        cov = Employee.objects.get(pk=cid)
     return {'employee': emp, 'hours': hours, 'shift_code': shift, 'kind': k,
-            'reason': (data.get('reason') or '')[:120], 'covering': cov,
-            'remarks': (data.get('remarks') or '')[:300]}
+            'reason': _text(data.get('reason'), 120), 'covering': cov,
+            'remarks': _text(data.get('remarks'), 300)}
 
 
 @transaction.atomic
 def add_extra(sheet, data, by=None):
+    lock_row(sheet)
     from .models import ExtraHours
     editable(sheet)
     v = validate_extra(sheet, data)
@@ -214,6 +275,7 @@ def add_extra(sheet, data, by=None):
 
 @transaction.atomic
 def change_extra(sheet, x, data):
+    lock_row(sheet)
     editable(sheet)
     merged = {'employee': x.employee_id, 'hours': x.hours, 'shift_code': x.shift_code, 'kind': x.kind,
               'reason': x.reason, 'covering': x.covering_id, 'remarks': x.remarks}
@@ -228,6 +290,7 @@ def change_extra(sheet, x, data):
 
 @transaction.atomic
 def remove_extra(sheet, x):
+    lock_row(sheet)
     editable(sheet)
     x.delete()
     _unreview(sheet)
@@ -244,6 +307,7 @@ def _signature(user, data):
 
 @transaction.atomic
 def submit_shift(sheet, shift_code, user, emp, data):
+    lock_row(sheet)
     from .models import ShiftSubmission
     editable(sheet)
     sub = ShiftSubmission.objects.filter(sheet=sheet, shift_code=shift_code).first()
@@ -261,6 +325,7 @@ def submit_shift(sheet, shift_code, user, emp, data):
 
 @transaction.atomic
 def withdraw_shift(sheet, shift_code):
+    lock_row(sheet)
     from .models import ShiftSubmission
     editable(sheet)
     sub = ShiftSubmission.objects.filter(sheet=sheet, shift_code=shift_code).first()
@@ -274,9 +339,11 @@ def withdraw_shift(sheet, shift_code):
 
 @transaction.atomic
 def send_back(sheet, shift_code, remarks):
+    lock_row(sheet)
     from .models import ShiftSubmission
     editable(sheet)
-    if not (remarks or '').strip():
+    remarks = _text(remarks, 2000)
+    if not remarks.strip():
         raise SheetError('Write what needs correcting.')
     sub = ShiftSubmission.objects.filter(sheet=sheet, shift_code=shift_code).first()
     if sub is None or sub.status != 'submitted':
@@ -295,6 +362,7 @@ def all_submitted(sheet):
 
 @transaction.atomic
 def review(sheet, user, emp, data):
+    lock_row(sheet)
     editable(sheet)
     if not all_submitted(sheet):
         raise SheetError('Every shift must be submitted before the day is reviewed.')
@@ -313,6 +381,7 @@ def month_closed(section, day):
 
 @transaction.atomic
 def lock(sheet, user, emp, data):
+    lock_row(sheet)
     editable(sheet)
     if sheet.status != 'reviewed':
         raise SheetError('The day must be reviewed before it is locked.')
@@ -328,6 +397,8 @@ def lock(sheet, user, emp, data):
 
 @transaction.atomic
 def reopen(sheet):
+    lock_section(sheet.section)
+    lock_row(sheet)
     if sheet.status != 'locked':
         raise SheetError('The day is not locked.')
     if month_closed(sheet.section, sheet.date):
@@ -354,12 +425,13 @@ def _plain(data):
 @transaction.atomic
 def request_correction(sheet, user, emp, data):
     from .models import Correction, ExtraHours
-    from apps.employees.models import Employee
+    lock_section(sheet.section)
+    lock_row(sheet)
     if sheet.status != 'locked':
         raise SheetError('The day is not locked; change the sheet directly.')
     if month_closed(sheet.section, sheet.date):
         raise SheetError('Accounts has closed this month. No more corrections.')
-    reason = (data.get('reason') or '').strip()
+    reason = _text(data.get('reason'), 2000).strip()
     if not reason:
         raise SheetError('Give the reason the locked entry is wrong.')
     k = data.get('kind')
@@ -367,12 +439,11 @@ def request_correction(sheet, user, emp, data):
     c = Correction(sheet=sheet, kind=k, reason=reason, requested_by=emp,
                    requested_signer_name=name, requested_signer_p_number=pno)
     if k == 'code':
-        e = sheet.entries.filter(employee_id=data.get('employee')).first()
+        e = sheet.entries.filter(employee_id=_uuid(data.get('employee'))).first()
         if e is None:
             raise SheetError('This person is not on the sheet.')
         code = data.get('code')
-        if code not in CODES:
-            raise SheetError('Unknown attendance code.')
+        check_code(e, code)
         if code == e.code:
             raise SheetError('That is already the recorded code.')
         c.employee = e.employee
@@ -385,7 +456,7 @@ def request_correction(sheet, user, emp, data):
         c.requested = {**{kk: (str(vv.pk) if hasattr(vv, 'pk') else str(vv) if vv is not None else None)
                           for kk, vv in v.items()}}
     elif k in ('extra_change', 'extra_remove'):
-        x = ExtraHours.objects.filter(pk=data.get('extra'), sheet=sheet).first()
+        x = ExtraHours.objects.filter(pk=_uuid(data.get('extra'), 'extra-hours line'), sheet=sheet).first()
         if x is None:
             raise SheetError('Choose the extra-hours line to change.')
         c.employee, c.extra = x.employee, x
@@ -406,17 +477,24 @@ def request_correction(sheet, user, emp, data):
 
 @transaction.atomic
 def decide_correction(c, approve, emp, note=''):
-    from .models import ExtraHours
+    from .models import ExtraHours, Correction
+    lock_section(c.sheet.section)
+    fresh = Correction.objects.select_for_update().get(pk=c.pk)
+    c.status = fresh.status
     if c.status != 'pending':
         raise SheetError('This request has already been decided.')
     if month_closed(c.sheet.section, c.sheet.date):
         raise SheetError('Accounts has closed this month.')
-    if not approve and not (note or '').strip():
+    note = _text(note, 2000)
+    if not approve and not note.strip():
         raise SheetError('Give the reason for rejecting.')
     if approve:
         sheet = c.sheet
         if c.kind == 'code':
-            e = sheet.entries.get(employee=c.employee)
+            e = sheet.entries.filter(employee=c.employee).first()
+            if e is None:
+                raise SheetError('This person is no longer on the sheet.')
+            check_code(e, c.requested.get('code'))
             types = shift_types(sheet.section)
             e.code = c.requested['code']
             e.hours = shift_hours(types, e.shift_code) if is_present(e.code) and e.shift_code != 'O' else Decimal('0')

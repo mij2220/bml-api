@@ -178,6 +178,7 @@ def _extra_dict(x):
 def _correction_dict(c):
     return {
         'id': str(c.id), 'sheet_id': str(c.sheet_id), 'date': str(c.sheet.date), 'section': str(c.sheet.section),
+        'section_id': str(c.sheet.section_id),
         'employee_id': str(c.employee_id), 'name': c.employee.full_name, 'p_number': c.employee.p_number or '',
         'kind': c.kind, 'kind_label': dict(Correction.KIND_CHOICES).get(c.kind, c.kind),
         'requested': c.requested, 'previous': c.previous, 'reason': c.reason, 'status': c.status,
@@ -449,7 +450,7 @@ class CorrectionDecideView(APIView):
         if emp is not None and c.requested_by_id == emp.pk and not access.is_admin(request.user):
             return _forbidden('You cannot decide your own request.')
         try:
-            S.decide_correction(c, bool(request.data.get('approve')), emp, request.data.get('note', ''))
+            S.decide_correction(c, request.data.get('approve') in (True, 'true', 'True', '1', 1), emp, request.data.get('note', ''))
         except S.SheetError as e:
             return error(str(e))
         log_action(request, f'attendance.correction_{c.status}', 'Correction', c.id,
@@ -478,14 +479,25 @@ class MyAttendanceView(APIView):
         gh = S.gh_dates(start, end)
         out = []
         section_name = None
+        from .models import GroupMembership, RosterOverride
+        mems = list(GroupMembership.objects.filter(employee=emp, effective_from__lte=end)
+                    .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=start))
+                    .select_related('group', 'group__section'))
+        ov = {(o.group_id, o.date): o.shift_code for o in RosterOverride.objects.filter(
+            group__in=[m.group for m in mems], date__range=(start, end))}
+        def mem_on(day):
+            for m in mems:
+                if m.effective_from <= day and (m.effective_to is None or m.effective_to >= day):
+                    return m
+            return None
         for d in range(1, days + 1):
             day = date(ym[0], ym[1], d)
             e = entries.get(day)
-            m = roster.membership_of(emp, day)
+            m = mem_on(day)
             rostered = None
             if m:
                 section_name = str(m.group.section)
-                rostered = roster.shift_on(m.group.section, m.group, day)
+                rostered = roster.shift_on(m.group.section, m.group, day, ov)
             out.append({
                 'date': str(day), 'rostered': e.shift_code if e else rostered,
                 'group': (e.group.name if e and e.group_id else (m.group.name if m else '')),
@@ -617,7 +629,13 @@ class MonthCloseView(APIView):
         if not access.can(request.user, 'overtime', 'close', section.pk):
             return _forbidden('Only Accounts can close a month.')
         import calendar
+        from django.db import transaction
         days = calendar.monthrange(*ym)[1]
+        with transaction.atomic():
+            S.lock_section(section)
+            return self._close(request, section, ym, days)
+
+    def _close(self, request, section, ym, days):
         locked = DailySheet.objects.filter(section=section, date__year=ym[0], date__month=ym[1],
                                            status='locked').count()
         if locked < days:

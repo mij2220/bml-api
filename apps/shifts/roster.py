@@ -72,7 +72,7 @@ def members_on(section, day):
     return list(
         GroupMembership.objects.filter(group__section=section, effective_from__lte=day)
         .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=day))
-        .filter(employee__status__in=['active', 'on_leave'])
+        # membership dates decide who is on the sheet, not today's employee status
         .select_related('employee', 'group', 'post')
         .order_by('group__order', 'group__name', 'order', 'employee__full_name')
     )

@@ -90,7 +90,7 @@ def is_member(user, on=None):
     from .models import GroupMembership
     from django.db.models import Q
     on = on or timezone.localdate()
-    return GroupMembership.objects.filter(employee=emp).filter(
+    return GroupMembership.objects.filter(employee=emp, effective_from__lte=on).filter(
         Q(effective_to__isnull=True) | Q(effective_to__gte=on.replace(day=1))
     ).exists()
 

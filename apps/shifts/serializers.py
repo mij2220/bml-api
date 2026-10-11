@@ -18,6 +18,8 @@ class ShiftGroupSerializer(serializers.ModelSerializer):
         fields = ['id', 'section', 'name', 'offset', 'order', 'member_count']
 
     def get_member_count(self, obj):
+        if hasattr(obj, 'current_members'):
+            return obj.current_members
         from django.db.models import Q
         from django.utils import timezone
         today = timezone.localdate()

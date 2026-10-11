@@ -87,6 +87,15 @@ class SectionAdminViewSet(_Base):
     label = 'section'
     queryset = Section.objects.select_related('department').prefetch_related('shift_types', 'groups', 'posts')
 
+    def update(self, request, *a, **k):
+        obj = self.get_object()
+        changing = any(f in request.data and str(request.data[f]).replace(' ', '').upper() != str(getattr(obj, f)).replace(' ', '').upper()
+                       for f in ('pattern', 'pattern_anchor'))
+        if changing and obj.sheets.filter(status='locked').exists():
+            return error('Days of this section are already locked. Changing the rotation would change their '
+                         'overtime. Use roster changes for single days instead.')
+        return super().update(request, *a, **k)
+
     def after_save(self, obj, created):
         if created:
             for i, (code, sc, name, st, en, hrs, prem) in enumerate(DEFAULT_SHIFTS):
@@ -123,6 +132,14 @@ class GroupAdminViewSet(_BySection):
     serializer_class = ShiftGroupSerializer
     queryset = ShiftGroup.objects.all()
     label = 'group'
+
+    def update(self, request, *a, **k):
+        obj = self.get_object()
+        if 'offset' in request.data and str(request.data['offset']) != str(obj.offset) \
+                and obj.section.sheets.filter(status='locked').exists():
+            return error('Days of this section are already locked. Moving the group\'s rotation would change '
+                         'their overtime. Use roster changes for single days instead.')
+        return super().update(request, *a, **k)
 
     def destroy(self, request, *a, **k):
         if self.get_object().memberships.exists():
@@ -192,16 +209,29 @@ class RosterOverrideAdminViewSet(_Base):
         return qs.filter(group__section_id=sid) if sid else qs
 
     def create(self, request, *a, **k):
-        # setting a cell back to the pattern removes the override
+        # one override per group and day; setting a cell back to the pattern removes it
         g = request.data.get('group')
         d = request.data.get('date')
-        existing = RosterOverride.objects.filter(group_id=g, date=d).first()
-        if existing:
-            existing.delete()
-        if request.data.get('clear'):
-            log_action(request, 'shifts.roster_override_clear', 'ShiftGroup', g, {'date': d})
-            return success(None, 'Back to the rotation.')
-        return super().create(request, *a, **k)
+        try:
+            day = date.fromisoformat(str(d))
+            group = ShiftGroup.objects.get(pk=g)
+        except Exception:
+            return error('Choose the group and the date.')
+        from .models import DailySheet
+        if DailySheet.objects.filter(section=group.section, date=day, status='locked').exists():
+            return error('That day is locked. Reopen it first.')
+        with transaction.atomic():
+            RosterOverride.objects.filter(group=group, date=day).delete()
+            if request.data.get('clear'):
+                log_action(request, 'shifts.roster_override_clear', 'ShiftGroup', group.pk, {'date': str(day)})
+                return success(None, 'Back to the rotation.')
+            s = self.get_serializer(data=request.data)
+            if not s.is_valid():
+                transaction.set_rollback(True)
+                return error('Please check the form.', errors=s.errors)
+            obj = s.save(created_by=request.user)
+        log_action(request, 'shifts.roster_override_create', 'RosterOverride', obj.pk, {'value': f'{group} {day} {obj.shift_code}'})
+        return success(self.get_serializer(obj).data, 'Saved.', status=201)
 
 
 class ModuleRoleAdminViewSet(_Base):

@@ -33,7 +33,7 @@ class EmployeeListCreateView(APIView):
         search = request.query_params.get('search')
         if search:
             from django.db.models import Q
-            qs = qs.filter(Q(full_name__icontains=search)|Q(employee_id__icontains=search)|Q(user__email__icontains=search))
+            qs = qs.filter(Q(full_name__icontains=search)|Q(employee_id__icontains=search)|Q(user__email__icontains=search)|Q(p_number__icontains=search))
         status_f = request.query_params.get('status')
         if status_f:
             qs = qs.filter(status=status_f)

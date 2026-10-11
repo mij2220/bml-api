@@ -91,15 +91,23 @@ class Statement:
             self.people.setdefault(eid, xs[0].employee)
         self.groups = {g.pk: g for g in section.groups.all()}
         self.ov = roster.overrides_map(section, self.wide_start, self.wide_end)
+        # all memberships of the section in the window, read once
+        from .models import GroupMembership
+        from django.db.models import Q
+        self.memberships = defaultdict(list)
+        for m in (GroupMembership.objects.filter(group__section=section, effective_from__lte=self.wide_end)
+                  .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=self.wide_start))):
+            self.memberships[m.employee_id].append(m)
+        self._crew = {}
 
     # --- helpers -------------------------------------------------------
     def _group_on(self, eid, day):
         e = self.entries.get((eid, day))
         if e and e.group_id in self.groups:
             return self.groups[e.group_id]
-        m = roster.membership_of(self.people[eid], day)
-        if m and m.group.section_id == self.section.pk:
-            return m.group
+        for m in self.memberships.get(eid, ()):
+            if m.effective_from <= day and (m.effective_to is None or m.effective_to >= day):
+                return self.groups.get(m.group_id)
         return None
 
     def _rostered(self, eid, day):
@@ -117,7 +125,9 @@ class Statement:
             g = self._group_on(eid, day)
             if g is not None and (g.pk, day) not in self.ov:
                 return roster.off_day_kind(self.section, g, day) or 'FO'
-            return 'FO'
+            # an off day set by hand: second day off when the day before was off too
+            prev = self._rostered(eid, day - timedelta(days=1))
+            return 'SO' if prev == 'O' and (day - timedelta(days=1)) not in self.gh else 'FO'
         return 'WORK'
 
     def crew_complete(self, eid, day):
@@ -126,6 +136,13 @@ class Statement:
         if g is None:
             return False, False
         first, last = roster.crew_cycle(self.section, g, day)
+        key = (eid, first)
+        if key in self._crew:
+            return self._crew[key]
+        self._crew[key] = self._crew_check(eid, first, last)
+        return self._crew[key]
+
+    def _crew_check(self, eid, first, last):
         provisional = False
         d = first
         while d <= last:
