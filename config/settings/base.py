@@ -33,6 +33,7 @@ SHARED_APPS = [
     'apps.replacements',
     'apps.notifications',
     'apps.reports',
+    'apps.shifts',
 ]
 
 TENANT_APPS = [

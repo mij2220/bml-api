@@ -17,9 +17,10 @@ class UserMeSerializer(serializers.ModelSerializer):
     full_name        = serializers.SerializerMethodField()
     department       = serializers.SerializerMethodField()
     designation_name = serializers.SerializerMethodField()
+    modules          = serializers.SerializerMethodField()
     class Meta:
         model = User
-        fields = ['id','email','role','must_change_password','is_shared_account','employee_id','p_number','full_name','department','designation_name']
+        fields = ['id','email','role','must_change_password','is_shared_account','employee_id','p_number','full_name','department','designation_name','modules']
         read_only_fields = fields
     def get_employee_id(self, obj):
         try: return str(obj.employee_profile.employee_id)
@@ -36,6 +37,13 @@ class UserMeSerializer(serializers.ModelSerializer):
     def get_designation_name(self, obj):
         try: return obj.employee_profile.designation.name
         except: return None
+    def get_modules(self, obj):
+        # Module tabs the person may open (ShiftLedger: Leave, Attendance, Overtime, Admin)
+        try:
+            from apps.shifts.access import modules_for
+            return modules_for(obj)
+        except Exception:
+            return [{'key': 'leave', 'level': 'own', 'roles': []}]
 
 class ChangePasswordSerializer(serializers.Serializer):
     old_password = serializers.CharField(required=True)
