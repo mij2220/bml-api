@@ -33,7 +33,7 @@ class Command(BaseCommand):
         from apps.shifts.admin_views import DEFAULT_SHIFTS, DEFAULT_GROUPS
 
         unit = next((d for d in Department.objects.all()
-                     if re.search(r'ammonia[\s\-_]*(2|ii)\b', d.name, re.I)), None)
+                     if re.search(r'\bamm(onia)?[\s\-_]*(2|ii)\b', d.name, re.I)), None)
         if unit is None:
             names = ', '.join(Department.objects.values_list('name', flat=True))
             self.stdout.write(f'shifts_seed_pilot: no Ammonia-2 unit found. Units: {names}')

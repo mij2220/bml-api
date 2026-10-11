@@ -14,6 +14,7 @@ def test_refuses_without_flag(org, monkeypatch):
 def test_seeds_once(org, monkeypatch):
     from apps.shifts.models import Section, GroupMembership
     monkeypatch.setenv('SHIFTS_ALLOW_PILOT_SEED', '1')
+    org.other_unit.name = 'AMM-2'; org.other_unit.save()
     a = org.person('Arif Saleem', unit=org.other_unit); a.p_number = '00273'; a.save()   # other_unit = Ammonia-II
     out = run()
     assert 'Production: 1 people placed' in out and 'not placed: 511' in out
