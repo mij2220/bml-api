@@ -2,7 +2,7 @@ from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from apps.core.utils import success, error
+from apps.core.utils import success, error, log_action
 from apps.core.permissions import IsEmployee, IsManager, IsHRAdmin, StandardPagination
 from .models import LeaveApplication, LeaveApproval, LeaveType, HolidayCalendar, PublicHoliday
 from .serializers import (
@@ -919,3 +919,25 @@ class LeavePDFView(APIView):
         except Exception as e:
             import traceback
             return error('PDF generation failed: ' + str(e), status=500)
+
+
+class LeaveSettingsView(APIView):
+    """GET for everyone signed in (the web app reads the switches); PUT Admin only."""
+    permission_classes = [IsEmployee]
+
+    def get(self, request):
+        from .models import LeaveSettings
+        return success({'sic_unit_visibility': LeaveSettings.get().sic_unit_visibility})
+
+    def put(self, request):
+        from .models import LeaveSettings
+        if not request.user.is_hr_admin:
+            return error('Permission denied.', status=403)
+        obj = LeaveSettings.get()
+        if 'sic_unit_visibility' in request.data:
+            v = request.data['sic_unit_visibility']
+            obj.sic_unit_visibility = v in (True, 'true', 'True', '1', 1)
+            obj.save()
+            log_action(request, 'leave.settings_update', 'LeaveSettings', None,
+                       {'sic_unit_visibility': obj.sic_unit_visibility})
+        return success({'sic_unit_visibility': obj.sic_unit_visibility}, 'Saved.')

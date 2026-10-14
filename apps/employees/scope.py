@@ -9,7 +9,8 @@ def team_ids(manager, include_self=False):
         return set()
     ids = set(manager.direct_reports.values_list('id', flat=True))
     ids |= set(manager.shift_incharge_for.values_list('id', flat=True))
-    unit_ids = list(manager.sic_units.values_list('id', flat=True))
+    from apps.leaves.models import LeaveSettings
+    unit_ids = list(manager.sic_units.values_list('id', flat=True)) if LeaveSettings.get().sic_unit_visibility else []
     if unit_ids:
         ids |= set(Employee.objects.filter(department_id__in=unit_ids).values_list('id', flat=True))
     ids.discard(manager.id)

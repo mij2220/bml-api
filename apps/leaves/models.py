@@ -260,3 +260,15 @@ class LeaveQuotaLog(BaseModel):
 
     def __str__(self):
         return f'{self.employee.full_name} — {self.leave_type.code} {self.year}: {self.old_allocated}→{self.new_allocated}'
+
+
+class LeaveSettings(models.Model):
+    """Single row (pk=1): switches Admin can change without a deploy."""
+    # An SIC also sees all staff of the units ticked in their record (sic_units).
+    sic_unit_visibility = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def get(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj

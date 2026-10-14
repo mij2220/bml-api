@@ -38,9 +38,7 @@ class TestSicUnits:
         # The Plant-2 SIC covers both units: give org.sic the other unit as well
         app_b = apply_leave(org.op_b, org.AL, start_in=10)
         sic = client_for(org.sic)
-        names = lambda: {r['full_name'] for r in sic.get(f'{API}/leaves/team-dashboard/').data['data']['rows']} \
-            if 'rows' in sic.get(f'{API}/leaves/team-dashboard/').data['data'] else \
-            {r['full_name'] for r in sic.get(f'{API}/leaves/team-dashboard/').data['data']}
+        names = lambda: {r['full_name'] for r in sic.get(f'{API}/leaves/team-dashboard/').data['data']['employees']}
         assert org.op_b.full_name not in names()
         r = client_for(org.admin).patch(f'{API}/employees/{org.sic.pk}/', {
             'sic_unit_ids': [str(org.unit.pk), str(org.other_unit.pk)]}, format='json')
@@ -61,3 +59,15 @@ class TestSicUnits:
     def test_only_admin_sets_units(self, org, client_for):
         r = client_for(org.sic).patch(f'{API}/employees/me/', {'sic_unit_ids': [str(org.other_unit.pk)]}, format='json')
         assert org.sic.sic_units.count() == 0
+
+
+    def test_admin_switch_turns_it_off(self, org, client_for):
+        admin = client_for(org.admin)
+        admin.patch(f'{API}/employees/{org.sic.pk}/', {'sic_unit_ids': [str(org.other_unit.pk)]}, format='json')
+        sic = client_for(org.sic)
+        names = lambda: {r['full_name'] for r in sic.get(f'{API}/leaves/team-dashboard/').data['data']['employees']}
+        assert org.op_b.full_name in names()
+        assert client_for(org.sic).put(f'{API}/leave-settings/', {'sic_unit_visibility': False}, format='json').status_code == 403
+        r = admin.put(f'{API}/leave-settings/', {'sic_unit_visibility': False}, format='json')
+        assert r.status_code == 200 and r.data['data']['sic_unit_visibility'] is False
+        assert org.op_b.full_name not in names()
