@@ -170,6 +170,10 @@ class LeaveApplication(BaseModel):
     applied_at = models.DateTimeField(auto_now_add=True)
     current_approval_level = models.IntegerField(default=1)
     reference_number = models.CharField(max_length=30, unique=True, blank=True)
+    # Why it was cancelled and by whom (required when a Supervisor / SIC / Admin
+    # cancels someone's approved leave). db_default keeps the old code working.
+    cancel_reason = models.TextField(blank=True, default='', db_default='')
+    cancelled_by_name = models.CharField(max_length=200, blank=True, default='', db_default='')
 
     class Meta:
         ordering = ['-applied_at']

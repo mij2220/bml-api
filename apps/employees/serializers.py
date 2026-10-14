@@ -79,7 +79,13 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
     reporting_manager_id = serializers.UUIDField(required=False, allow_null=True, write_only=True)
     shift_incharge = EmployeeListSerializer(read_only=True)
     shift_incharge_id = serializers.UUIDField(required=False, allow_null=True, write_only=True)
+    # Units whose whole staff this SIC sees in the Leave module
+    sic_units = serializers.SerializerMethodField(read_only=True)
+    sic_unit_ids = serializers.ListField(child=serializers.UUIDField(), required=False, write_only=True)
     profile_picture_url  = serializers.SerializerMethodField(read_only=True)
+
+    def get_sic_units(self, obj):
+        return [{'id': str(d.id), 'name': d.name} for d in obj.sic_units.all()]
 
     def get_profile_picture_url(self, obj):
         if obj.profile_picture and obj.profile_picture.name:
@@ -95,10 +101,11 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ['id','employee_id','p_number','full_name','email','role','is_shared_account','cnic','gender','date_of_birth',
                   'phone','joining_date','experience_start_date','experience_display','experience_years','experience_tier','employment_type','salary_grade', 'account_code','department','designation',
-                  'branch','reporting_manager','reporting_manager_id','shift_incharge','shift_incharge_id','status','profile_picture','profile_picture_url','created_at','updated_at']
+                  'branch','reporting_manager','reporting_manager_id','shift_incharge','shift_incharge_id','sic_units','sic_unit_ids','status','profile_picture','profile_picture_url','created_at','updated_at']
 
     def update(self, instance, validated_data):
         from apps.employees.models import Employee as Emp
+        sic_unit_ids = validated_data.pop('sic_unit_ids', None)
         manager_id = validated_data.pop('reporting_manager_id', None)
         if manager_id is not None:
             if manager_id == '' or str(manager_id) == 'None':
@@ -128,6 +135,9 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+        if sic_unit_ids is not None:
+            from apps.employees.models import Department
+            instance.sic_units.set(Department.objects.filter(pk__in=sic_unit_ids))
 
         # Trigger AL quota recalculation when experience changes
         if exp_start_changed:

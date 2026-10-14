@@ -130,6 +130,7 @@ class LeaveApplicationListSerializer(WorkflowFieldsMixin, serializers.ModelSeria
             'is_half_day', 'applied_at', 'current_approval_level',
             'replacement_employee', 'duty_date_for_cd',
             'stage', 'stage_label', 'returned_remark', 'returned_by', 'permissions',
+            'cancel_reason', 'cancelled_by_name',
         ]
 
 
@@ -178,7 +179,7 @@ class LeaveApplicationDetailSerializer(WorkflowFieldsMixin, serializers.ModelSer
             'hours_requested', 'total_days', 'reason', 'contact_during_leave', 'address_during_leave', 'duty_date_for_cd',
             'attachment', 'attachment_url', 'employee_id_code', 'department', 'status', 'applied_at', 'current_approval_level', 'approvals', 'duty_date_for_cd',
             'leave_type_code', 'stage', 'stage_label', 'returned_remark', 'returned_by',
-            'waiting_for', 'permissions',
+            'waiting_for', 'permissions', 'cancel_reason', 'cancelled_by_name',
         ]
 
 

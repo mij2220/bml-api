@@ -79,6 +79,9 @@ class Employee(BaseModel):
                                           on_delete=models.SET_NULL, related_name='direct_reports')
     shift_incharge = models.ForeignKey('self', null=True, blank=True,
                                        on_delete=models.SET_NULL, related_name='shift_incharge_for')
+    # Units whose whole staff an SIC sees (e.g. the Plant-2 SIC: AMM-3 and UR-3).
+    # Visibility only; approvals still follow each person's own Supervisor / SIC.
+    sic_units = models.ManyToManyField(Department, blank=True, related_name='sics')
     branch = models.ForeignKey(Branch, null=True, blank=True,
                                on_delete=models.SET_NULL, related_name='employees')
     status = models.CharField(max_length=20, choices=EMPLOYEE_STATUS_CHOICES,

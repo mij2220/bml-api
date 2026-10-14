@@ -1,0 +1,18 @@
+"""Who a Shift Supervisor / SIC sees in the Leave module."""
+
+
+def team_ids(manager, include_self=False):
+    """Employees a Supervisor / SIC sees: their direct reports, everyone who has
+    them as SIC, and all staff of the units they cover as SIC (sic_units)."""
+    from apps.employees.models import Employee
+    if manager is None:
+        return set()
+    ids = set(manager.direct_reports.values_list('id', flat=True))
+    ids |= set(manager.shift_incharge_for.values_list('id', flat=True))
+    unit_ids = list(manager.sic_units.values_list('id', flat=True))
+    if unit_ids:
+        ids |= set(Employee.objects.filter(department_id__in=unit_ids).values_list('id', flat=True))
+    ids.discard(manager.id)
+    if include_self:
+        ids.add(manager.id)
+    return ids

@@ -105,13 +105,9 @@ class LeaveApplicationListView(APIView):
         if user.is_manager_role:
             try:
                 emp = user.employee_profile
-                # L1: employees who report directly to this manager
-                l1_ids = list(emp.direct_reports.values_list('id', flat=True))
-                # L2: employees who have this manager as shift_incharge
-                l2_ids = list(emp.shift_incharge_for.values_list('id', flat=True))
-                team_ids = list(set(l1_ids + l2_ids))
-                team_ids.append(emp.id)
-                return qs.filter(employee_id__in=team_ids)
+                # Direct reports, people with this SIC, and the SIC's whole units
+                from apps.employees.scope import team_ids
+                return qs.filter(employee_id__in=team_ids(emp, include_self=True))
             except Exception:
                 return qs.none()
         if user.role == 'rota_manager':
