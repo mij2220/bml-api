@@ -860,9 +860,16 @@ class LeaveApplicationService:
                     f'(until {deadline:%d %b %Y}). Please ask your Shift Supervisor to cancel it.'
                 )
 
+        # Client: a Supervisor / SIC (or Admin) cancelling someone's approved leave
+        # must give the reason; the employee sees it on My Applications.
+        if application.status == 'approved' and not is_owner and request is not None and not reason:
+            raise LeaveValidationError('Give the reason for cancelling this approved leave.')
+
         old_status = application.status
         application.status = 'cancelled'
-        application.save(update_fields=['status'])
+        application.cancel_reason = reason[:2000]
+        application.cancelled_by_name = (actor.full_name if actor is not None and not is_owner else '')
+        application.save(update_fields=['status', 'cancel_reason', 'cancelled_by_name'])
 
         # Restore balance if it was approved
         if old_status == 'approved':
@@ -1002,11 +1009,8 @@ def get_team_calendar(manager_employee, month_str, user=None, include_pending=Fa
         qs = qs.filter(employee__department_id=manager_employee.department_id)
         statuses = ['approved', 'pending']
     else:
-        l1_ids = list(manager_employee.direct_reports.values_list('id', flat=True))
-        l2_ids = list(manager_employee.shift_incharge_for.values_list('id', flat=True))
-        team_ids = list(set(l1_ids + l2_ids))
-        team_ids.append(manager_employee.id)
-        qs = qs.filter(employee_id__in=team_ids)
+        from apps.employees.scope import team_ids
+        qs = qs.filter(employee_id__in=team_ids(manager_employee, include_self=True))
         statuses = ['approved']
 
     return qs.filter(status__in=statuses).select_related(
@@ -1032,9 +1036,8 @@ def get_team_leave_dashboard(manager_employee, user, year=None, search=''):
         if manager_employee is None:
             employees = employees.none()
         else:
-            l1_ids = set(manager_employee.direct_reports.values_list('id', flat=True))
-            l2_ids = set(manager_employee.shift_incharge_for.values_list('id', flat=True))
-            employees = employees.filter(id__in=(l1_ids | l2_ids))
+            from apps.employees.scope import team_ids
+            employees = employees.filter(id__in=team_ids(manager_employee))
     search = (search or '').strip()
     if search:
         employees = employees.filter(
