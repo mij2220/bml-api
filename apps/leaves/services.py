@@ -435,6 +435,28 @@ class LeaveApplicationService:
             except LeaveBalance.DoesNotExist:
                 pass  # No balance record — skip this check
 
+        # Rule 11 — annual leave split limit (Engro, 15 Oct 2026): juniors 6, seniors 8.
+        # Each AL application is one split. Approved splits plus applications still
+        # pending may not go beyond the person's limit. No limit set (0) = not checked.
+        if leave_type.code == 'AL':
+            al_year = start_date.year
+            bal = LeaveBalance.objects.filter(
+                employee=employee, leave_type=leave_type, year=al_year).first()
+            if bal and bal.splits_allowed:
+                pending = LeaveApplication.objects.filter(
+                    employee=employee, leave_type=leave_type, status='pending',
+                    start_date__year=al_year)
+                if exclude_id:
+                    pending = pending.exclude(pk=exclude_id)
+                taken = (bal.splits_used or 0) + pending.count()
+                if taken >= bal.splits_allowed:
+                    raise LeaveValidationError(
+                        f'All {bal.splits_allowed} annual leave splits for {al_year} are used '
+                        f'({bal.splits_used or 0} approved, {taken - (bal.splits_used or 0)} pending). '
+                        f'No more annual leave applications can be made this year; please speak to your Supervisor.',
+                        'leave_type',
+                    )
+
         return total_days
 
     # ── Submit ─────────────────────────────────────────────────
