@@ -212,6 +212,11 @@ def sheet_payload(user, sheet):
                 'holiday': sum(1 for e in on if kind(e.code) == 'holiday'),
                 'attendance_hours': str(sum((e.hours for e in on), 0)),
                 'extra_hours': str(sum((x.hours for x in extras if x.shift_code == code), 0)),
+                'covering': sum(1 for x in extras if x.shift_code == code and x.covering_id),
+                'min_staff': t.min_staff if t else 0,
+                'short': max(0, (t.min_staff if t else 0)
+                             - sum(1 for e in on if kind(e.code) == 'present')
+                             - sum(1 for x in extras if x.shift_code == code and x.covering_id)),
             },
             'submission': {
                 'status': sub.status if sub else 'draft',
@@ -392,6 +397,8 @@ class SheetActionView(APIView):
                 S.withdraw_shift(sheet, shift)
             elif action == 'send-back':
                 S.send_back(sheet, shift, request.data.get('remarks', ''))
+                from .notify import sheet_sent_back
+                sheet_sent_back(sheet, shift, request.data.get('remarks', ''), by=emp)
             elif action == 'review':
                 S.review(sheet, request.user, emp, request.data)
             elif action == 'lock':
@@ -416,6 +423,8 @@ class SheetCorrectionsView(APIView):
             c = S.request_correction(sheet, request.user, _emp(request), request.data)
         except S.SheetError as e:
             return error(str(e))
+        from .notify import correction_requested
+        correction_requested(c, by=_emp(request))
         log_action(request, 'attendance.correction_request', 'Correction', c.id,
                    {'date': str(sheet.date), 'employee': c.employee.full_name, 'kind': c.kind})
         return success(_correction_dict(c), 'Sent to the manager.', status=201)
@@ -453,6 +462,8 @@ class CorrectionDecideView(APIView):
             S.decide_correction(c, request.data.get('approve') in (True, 'true', 'True', '1', 1), emp, request.data.get('note', ''))
         except S.SheetError as e:
             return error(str(e))
+        from .notify import correction_decided
+        correction_decided(c)
         log_action(request, f'attendance.correction_{c.status}', 'Correction', c.id,
                    {'date': str(c.sheet.date), 'employee': c.employee.full_name})
         return success(_correction_dict(c))

@@ -50,20 +50,29 @@ def off_day_kind(section, group, day):
 
 
 def crew_cycle(section, group, day):
-    """(first day, last day) of the crew week containing `day`: the pattern
-    cycle that starts on the first working shift after the off days (A-6)."""
+    """(first day, last day) of the crew week containing `day` (A-6): a run of
+    working shifts and the off days that follow it. For the 8-day rota
+    M,M,E,E,N,N,O,O that is the whole cycle; for Engro's 24-day rota
+    (6 M, 2 off, 6 E, 2 off, 6 N, 2 off) it is each 8-day block."""
     pat = section.pattern_list
     n = len(pat) or 1
-    # start of the cycle = first index after the last 'O' in a run of off days
-    start_idx = 0
-    for i in range(n):
-        if pat[i] != 'O' and pat[(i - 1) % n] == 'O':
-            start_idx = i
-            break
-    pos = pattern_position(section, group, day)
-    back = (pos - start_idx) % n
+    if not pat or 'O' not in pat or all(c == 'O' for c in pat):
+        first = day - timedelta(days=pattern_position(section, group, day))
+        return first, first + timedelta(days=n - 1)
+    i = pattern_position(section, group, day)
+    back = 0
+    while pat[(i - back) % n] == 'O' and back < n:          # an off day belongs to the run before it
+        back += 1
+    while pat[(i - back - 1) % n] != 'O' and back < n:      # walk to the start of the working run
+        back += 1
+    start = (i - back) % n
+    length = 0
+    while pat[(start + length) % n] != 'O' and length < n:
+        length += 1
+    while pat[(start + length) % n] == 'O' and length < n:
+        length += 1
     first = day - timedelta(days=back)
-    return first, first + timedelta(days=n - 1)
+    return first, first + timedelta(days=length - 1)
 
 
 def members_on(section, day):
@@ -110,3 +119,32 @@ def month_grid(section, year, month):
         if expected and len(groups) >= len(expected) and sorted(c for c in on if c != 'O') != expected:
             problems.append(str(date(year, month, d + 1)))
     return {'days': days, 'rows': rows, 'problem_days': problems}
+
+
+def year_schedule(section, year):
+    """The rota for a whole year: for each group, the shift on every day."""
+    from datetime import date
+    start, end = date(year, 1, 1), date(year, 12, 31)
+    ov = overrides_map(section, start, end)
+    groups = list(section.groups.all())
+    days = []
+    d = start
+    while d <= end:
+        days.append(d)
+        d += timedelta(days=1)
+    rows = [{'group_id': str(g.pk), 'group': g.name,
+             'shifts': ''.join(shift_on(section, g, day, ov) for day in days)} for g in groups]
+    return {'year': year, 'start': str(start), 'days': len(days), 'rows': rows}
+
+
+def on_duty(section, day):
+    """Who is rostered on each shift on a day (groups and their members)."""
+    ov = overrides_map(section, day, day)
+    out = {}
+    for m in members_on(section, day):
+        code = shift_on(section, m.group, day, ov)
+        out.setdefault(code, {}).setdefault(m.group.name, []).append(
+            {'employee_id': str(m.employee_id), 'name': m.employee.full_name,
+             'p_number': m.employee.p_number or '', 'post': m.post.code if m.post_id else '',
+             'trainee': m.is_trainee})
+    return out

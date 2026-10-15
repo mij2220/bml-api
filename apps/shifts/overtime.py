@@ -242,6 +242,16 @@ class Statement:
             d += timedelta(days=1)
         r['equivalent_single'] = r['single'] + 2 * r['double'] + 3 * r['triple']
         r['ot_total'] = r['ot_normal'] + r['ot_training'] + r['ot_callout']
+        # Fatigue / cost alerts (shown only, nothing blocked)
+        r['alerts'] = []
+        max_day = _d(self.rules.get('alert_max_day_hours') or 0)
+        if max_day:
+            for day in r['days']:
+                if day['hours'] + day['extra'] > max_day:
+                    r['alerts'].append(f"{day['date']}: {day['hours'] + day['extra']:g} hours worked (over {max_day:g})")
+        max_month = _d(self.rules.get('alert_month_ot_hours') or 0)
+        if max_month and r['ot_total'] > max_month:
+            r['alerts'].append(f"{r['ot_total']:g} overtime hours this month (over {max_month:g})")
         r['leave_by_code'] = dict(r['leave_by_code'])
         return r
 

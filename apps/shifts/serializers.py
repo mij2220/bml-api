@@ -7,7 +7,7 @@ from .codes import CODES
 class ShiftTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShiftType
-        fields = ['id', 'section', 'code', 'sheet_code', 'name', 'start_time', 'end_time', 'hours', 'premium', 'order']
+        fields = ['id', 'section', 'code', 'sheet_code', 'name', 'start_time', 'end_time', 'hours', 'premium', 'order', 'min_staff']
 
 
 class ShiftGroupSerializer(serializers.ModelSerializer):

@@ -61,6 +61,8 @@ class ShiftType(BaseModel):
     hours = models.DecimalField(max_digits=4, decimal_places=2, default=8)
     premium = models.CharField(max_length=10, choices=PREMIUM_CHOICES, default='none')
     order = models.PositiveSmallIntegerField(default=0)
+    # Fewest people the shift needs (present + covering); 0 = no check
+    min_staff = models.PositiveSmallIntegerField(default=0, db_default=0)
 
     class Meta:
         ordering = ['section', 'order']
@@ -285,6 +287,9 @@ def default_ot_rules():
         'evening_premium_percent': 12,
         'night_premium_percent': 17,
         'premium_on_overtime': True,
+        # Alerts only, nothing is blocked (assumed limits, editable by Admin)
+        'alert_max_day_hours': 16,
+        'alert_month_ot_hours': 72,
     }
 
 

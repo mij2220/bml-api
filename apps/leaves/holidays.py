@@ -106,14 +106,30 @@ class HolidayCompensationView(APIView):
             if request.data.get('holiday_id') else None
         if h is None:
             return error('Choose the gazetted holiday.')
-        if h.date > timezone.localdate():
-            return error('This holiday has not come yet.')
-        cd = LeaveType.objects.filter(code='CD').first()
-        if cd is None:
-            return error('The Compensatory Day (CD) leave type is not set up. Ask Admin to add it under Leave Types.')
+        try:
+            comp, bal = give_holiday_cd(emp, h, user, request.data.get('note'))
+        except ValueError as e:
+            return error(str(e))
+        log_action(request, 'leave.holiday_compensation', 'HolidayCompensation', comp.pk, {
+            'employee': emp.full_name, 'holiday': h.name, 'date': str(h.date), 'days': str(comp.days), 'note': comp.note})
+        return success({'id': str(comp.id), 'cd_available': str(bal.available)},
+                       f'1 compensatory day added for {h.name}.', status=201)
+
+
+def give_holiday_cd(emp, h, user, note=''):
+    """Give `emp` 1 compensatory day for working on gazetted holiday `h`.
+    Used from Leave (Employees > Leave Balances) and from Attendance (CD due list).
+    Raises ValueError with a message for the person when it cannot be given."""
+    if h.date > timezone.localdate():
+        raise ValueError('This holiday has not come yet.')
+    cd = LeaveType.objects.filter(code='CD').first()
+    if cd is None:
+        raise ValueError('The Compensatory Day (CD) leave type is not set up. Ask Admin to add it under Leave Types.')
+    with transaction.atomic():
         if HolidayCompensation.objects.filter(employee=emp, holiday=h).exists():
-            return error(f'{emp.full_name} already has a compensatory day for {h.name} ({h.date:%d %b %Y}).')
-        note = str(request.data.get('note') or '').strip()[:200]
+            raise ValueError(f'{emp.full_name} already has a compensatory day for {h.name} ({h.date:%d %b %Y}).')
+        me = getattr(user, 'employee_profile', None) if user is not None else None
+        note = str(note or '').strip()[:200]
         days = Decimal('1')
         bal, _ = LeaveBalance.objects.select_for_update().get_or_create(
             employee=emp, leave_type=cd, year=h.date.year,
@@ -123,17 +139,14 @@ class HolidayCompensationView(APIView):
         bal.save(update_fields=['allocated'])
         comp = HolidayCompensation.objects.create(
             employee=emp, holiday=h, leave_type=cd, days=days, granted_by=me, note=note)
-        who = me.full_name if me else user.email
+        who = me.full_name if me else (user.email if user is not None else 'system')
         LeaveQuotaLog.objects.create(
             employee=emp, leave_type=cd, year=h.date.year, old_allocated=old, new_allocated=bal.allocated,
             old_splits_allowed=bal.splits_allowed, new_splits_allowed=bal.splits_allowed,
             reason=f'{who}: worked on {h.name} ({h.date:%d %b %Y}){" - " + note if note else ""}'[:200],
-            triggered_by='hr_manual' if user.is_hr_admin else 'supervisor')
-        log_action(request, 'leave.holiday_compensation', 'HolidayCompensation', comp.pk, {
-            'employee': emp.full_name, 'holiday': h.name, 'date': str(h.date), 'days': str(days), 'note': note})
-        from apps.notifications.services import NotificationService
-        NotificationService.create(emp, 'announcement', 'Compensatory day added',
-                                   f'1 compensatory day (CD) added for working on {h.name} ({h.date:%d %b %Y}).',
-                                   action_url='/leave-balance')
-        return success({'id': str(comp.id), 'cd_available': str(bal.available)},
-                       f'1 compensatory day added for {h.name}.', status=201)
+            triggered_by='hr_manual' if (user is not None and user.is_hr_admin) else 'supervisor')
+    from apps.notifications.services import NotificationService
+    NotificationService.create(emp, 'announcement', 'Compensatory day added',
+                               f'1 compensatory day (CD) added for working on {h.name} ({h.date:%d %b %Y}).',
+                               action_url='/leave-balance')
+    return comp, bal

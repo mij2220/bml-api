@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import SimpleRouter
-from . import views as v, admin_views as a
+from . import views as v, admin_views as a, followups as f
 
 router = SimpleRouter()
 router.register('shifts/admin/sections', a.SectionAdminViewSet, basename='shift-admin-section')
@@ -29,6 +29,14 @@ urlpatterns = [
     path('overtime/statement/', v.StatementView.as_view()),
     path('overtime/my/', v.MyOvertimeView.as_view()),
     path('overtime/close-month/', v.MonthCloseView.as_view()),
+    path('shifts/schedule/sections/', f.ScheduleSectionsView.as_view()),
+    path('shifts/schedule/', f.ScheduleView.as_view()),
+    path('shifts/on-duty/', f.OnDutyView.as_view()),
+    path('shifts/cd-due/', f.CdDueView.as_view()),
+    path('shifts/unplanned-leave/', f.UnplannedLeaveView.as_view()),
+    path('shifts/todo/', f.TodoView.as_view()),
+    path('overtime/calculator/', f.CalculatorView.as_view()),
+    path('shifts/admin/sections/<uuid:pk>/spread-groups/', f.SpreadGroupsView.as_view()),
     path('shifts/admin/settings/', a.ModuleSettingsView.as_view()),
     path('shifts/admin/holidays/', a.HolidaysView.as_view()),
     path('shifts/admin/members-import/', a.MembersImportView.as_view()),
