@@ -7,6 +7,23 @@ from .serializers import (EmployeeListSerializer, EmployeeDetailSerializer,
                           EmployeeCreateSerializer, DepartmentSerializer,
                           DesignationSerializer, BranchSerializer)
 
+
+def _visible(user, emp):
+    """Admin sees everyone; a Supervisor / SIC sees their team and themselves;
+    anyone else only themselves."""
+    if user.is_hr_admin:
+        return True
+    me = getattr(user, 'employee_profile', None)
+    if me is None:
+        return False
+    if me.id == emp.id:
+        return True
+    if user.is_manager_role:
+        from apps.employees.scope import team_ids
+        return emp.id in team_ids(me)
+    return False
+
+
 class EmployeeListCreateView(APIView):
     permission_classes = [IsEmployee]
     parser_classes = [JSONParser, MultiPartParser, FormParser]
@@ -95,6 +112,8 @@ class EmployeeDetailView(APIView):
             emp = Employee.objects.select_related('user','department','designation','branch','reporting_manager').get(pk=pk)
         except Employee.DoesNotExist:
             return error('Employee not found.', status=404)
+        if not _visible(request.user, emp):
+            return error('Employee not found.', status=404)
         return success(EmployeeDetailSerializer(emp).data)
     def patch(self, request, pk):
         if not request.user.is_hr_admin:
@@ -180,6 +199,8 @@ class EmployeeBalancesView(APIView):
             emp = Employee.objects.get(pk=pk)
         except Employee.DoesNotExist:
             return error('Employee not found.', status=404)
+        if not _visible(request.user, emp):
+            return error('Employee not found.', status=404)
         year = int(request.query_params.get('year', timezone.now().year))
         from apps.leaves.models import LeaveBalance
         balances = LeaveBalance.objects.filter(employee=emp, year=year).select_related('leave_type')
@@ -190,8 +211,11 @@ class EmployeeBalancesView(APIView):
         return success(data)
 
     def post(self, request, pk):
-        """Adjust a leave balance for an employee. Admin only."""
-        if not request.user.is_hr_admin:
+        """Adjust a leave balance. Admin for anyone; a Supervisor / SIC for the people
+        in their team, not themselves, and always with a reason (Engro, 15 Oct 2026).
+        Every adjustment is recorded in the quota log and the audit log."""
+        user = request.user
+        if not (user.is_hr_admin or user.is_manager_role):
             return error('Permission denied.', status=403)
         from apps.leaves.models import LeaveBalance, LeaveType
         from django.utils import timezone
@@ -201,19 +225,29 @@ class EmployeeBalancesView(APIView):
             emp = Employee.objects.get(pk=pk)
         except Employee.DoesNotExist:
             return error('Employee not found.', status=404)
+        if not user.is_hr_admin:
+            me = getattr(user, 'employee_profile', None)
+            if me is not None and me.id == emp.id:
+                return error('You cannot adjust your own leave balance.', status=403)
+            if not _visible(user, emp):
+                return error('Employee not found.', status=404)
 
         leave_type_id = request.data.get('leave_type_id')
         adjustment    = request.data.get('adjustment')
-        note          = request.data.get('note', '')
+        note          = str(request.data.get('note') or '').strip()[:200]
         year          = int(request.data.get('year', timezone.now().year))
 
         if not leave_type_id or adjustment is None:
             return error('leave_type_id and adjustment are required.', status=400)
+        if not user.is_hr_admin and not note:
+            return error('Please give the reason for this adjustment.', status=400)
 
         try:
             adj = Decimal(str(adjustment))
         except InvalidOperation:
             return error('adjustment must be a number.', status=400)
+        if not adj.is_finite() or adj == 0 or abs(adj) > 365:
+            return error('Enter the number of days to add (e.g. 2) or remove (e.g. -1).', status=400)
 
         try:
             leave_type = LeaveType.objects.get(pk=leave_type_id)
@@ -224,8 +258,23 @@ class EmployeeBalancesView(APIView):
             employee=emp, leave_type=leave_type, year=year,
             defaults={'allocated': Decimal('0'), 'used': Decimal('0'), 'carried_over': Decimal('0')}
         )
+        old_allocated = balance.allocated
         balance.allocated = max(Decimal('0'), balance.allocated + adj)
         balance.save()
+
+        from apps.leaves.models import LeaveQuotaLog
+        who = getattr(getattr(user, 'employee_profile', None), 'full_name', '') or user.email
+        LeaveQuotaLog.objects.create(
+            employee=emp, leave_type=leave_type, year=year,
+            old_allocated=old_allocated, new_allocated=balance.allocated,
+            old_splits_allowed=balance.splits_allowed, new_splits_allowed=balance.splits_allowed,
+            reason=f'{who}: {note}'[:200] if note else f'Adjusted by {who}'[:200],
+            triggered_by='hr_manual' if user.is_hr_admin else 'supervisor',
+        )
+        from apps.core.utils import log_action
+        log_action(request, 'leave_balance_adjusted', 'LeaveBalance', target_id=str(balance.id), changes={
+            'employee': emp.full_name, 'leave_type': leave_type.code, 'year': year,
+            'old_allocated': str(old_allocated), 'new_allocated': str(balance.allocated), 'reason': note})
 
         return success({
             'leave_type_id': str(leave_type.id),
