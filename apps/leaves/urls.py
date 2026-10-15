@@ -1,4 +1,5 @@
 from django.urls import path
+from .holidays import GazettedHolidaysView, GazettedHolidayDetailView, HolidayCompensationView
 from .views import (
     LeaveTypeListCreateView, LeaveTypeDetailView,
     LeaveApplicationListView, LeaveApplicationDetailView,
@@ -22,5 +23,8 @@ urlpatterns = [
     path('leaves/<uuid:pk>/attachment/', LeaveAttachmentView.as_view(), name='leave-attachment'),
     path('leaves/<uuid:pk>/pdf/', LeavePDFView.as_view(), name='leave-pdf'),
     path('leave-settings/', LeaveSettingsView.as_view(), name='leave-settings'),
+    path('gazetted-holidays/', GazettedHolidaysView.as_view(), name='gazetted-holidays'),
+    path('gazetted-holidays/<uuid:pk>/', GazettedHolidayDetailView.as_view(), name='gazetted-holiday-detail'),
+    path('employees/<uuid:pk>/holiday-compensation/', HolidayCompensationView.as_view(), name='holiday-compensation'),
     path('holiday-calendars/', HolidayCalendarView.as_view(), name='holiday-calendar-list'),
 ]
