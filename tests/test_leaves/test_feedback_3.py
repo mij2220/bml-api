@@ -67,3 +67,52 @@ class TestAnnualLeaveSplitLimit:
         _big_balance(org, org.op1)
         set_al(org, org.op1, allowed=1, used=1)
         assert apply(client_for(org.op1), org.CL, 10).status_code == 201
+
+
+def set_bal(org, emp, allocated, used=0):
+    b = LeaveBalance.objects.get(employee=emp, leave_type=org.AL, year=today().year)
+    b.allocated, b.used, b.splits_allowed, b.splits_used = allocated, used, 0, 0
+    b.save()
+
+
+class TestFourteenDayBlock:
+    """Imran, 15 Oct: 16 days left, applies for 4 -> 12 left, no 14-day block yet -> refused."""
+
+    def test_16_left_apply_4_refused(self, org, client_for):
+        set_bal(org, org.op1, 30, used=14)                     # 16 left
+        r = apply(client_for(org.op1), org.AL, 10, days=4)
+        assert r.status_code == 400
+        assert 'at least 14 days in a row' in str(r.data)
+
+    def test_16_left_apply_2_allowed(self, org, client_for):
+        set_bal(org, org.op1, 30, used=14)                     # 16 left -> 14 after
+        assert apply(client_for(org.op1), org.AL, 10, days=2).status_code == 201
+
+    def test_pending_days_are_counted(self, org, client_for):
+        set_bal(org, org.op1, 20)                              # 20 left
+        c = client_for(org.op1)
+        assert apply(c, org.AL, 10, days=4).status_code == 201  # 16 left
+        r = apply(c, org.AL, 20, days=4)                       # would be 12
+        assert r.status_code == 400 and '4 days already pending' in str(r.data)
+
+    def test_half_day_counts(self, org, client_for):
+        set_bal(org, org.op1, 14)
+        r = client_for(org.op1).post(f'{API}/leaves/', {
+            'leave_type_id': str(org.AL.id), 'start_date': str(today().replace(day=1).replace(month=12)),
+            'end_date': str(today().replace(day=1).replace(month=12)), 'is_half_day': True,
+            'reason': 'Family matter', 'contact_during_leave': '0300', 'address_during_leave': 'Daharki'}, format='json')
+        assert r.status_code == 400 and '14 days in a row' in str(r.data), r.data
+
+    def test_the_14_day_block_itself_is_allowed(self, org, client_for):
+        set_bal(org, org.op1, 16)
+        assert apply(client_for(org.op1), org.AL, 10, days=14).status_code == 201
+
+    def test_after_block_small_leaves_allowed(self, org, client_for):
+        set_bal(org, org.op1, 30)
+        c = client_for(org.op1)
+        assert apply(c, org.AL, 10, days=14).status_code == 201  # block pending
+        assert apply(c, org.AL, 40, days=10).status_code == 201  # 6 left, fine
+
+    def test_already_below_14_not_locked_out(self, org, client_for):
+        set_bal(org, org.op1, 10)                              # part-year joiner
+        assert apply(client_for(org.op1), org.AL, 10, days=2).status_code == 201

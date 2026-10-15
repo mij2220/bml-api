@@ -404,36 +404,38 @@ class LeaveApplicationService:
                 'You already have a pending or approved leave in this date range.', 'start_date'
             )
 
-        # Rule 10 — 14-day consecutive AL requirement
-        # Employee must retain at least 14 days for a consecutive block once per year.
-        # If applying AL would leave remaining balance < 14 AND they haven't yet
-        # taken a 14+ consecutive block this year, block the application.
-        if leave_type.code == 'AL' and not is_half_day:
-            try:
-                al_balance = LeaveBalance.objects.get(
-                    employee=employee, leave_type=leave_type, year=year
-                )
-                remaining_after = al_balance.available - total_days
-                # Check if employee has already taken a 14+ day consecutive block
-                from django.db.models import F
-                has_long_block = LeaveApplication.objects.filter(
-                    employee=employee,
-                    leave_type=leave_type,
-                    status='approved',
-                    start_date__year=year,
-                ).annotate(
-                    duration=F('total_days')
-                ).filter(total_days__gte=14).exists()
-
-                if not has_long_block and remaining_after < 14 and total_days < 14:
+        # Rule 10 — 14-day consecutive AL requirement (Engro): once a year a person must
+        # take at least 14 annual leave days in one go. Until such a block is approved
+        # or pending, an application may not bring the remaining annual leave below 14
+        # days. "Remaining" also takes off other applications still pending, so two
+        # small requests cannot together eat into the 14 days. Half days count too.
+        if leave_type.code == 'AL':
+            al_year = start_date.year
+            al_balance = LeaveBalance.objects.filter(
+                employee=employee, leave_type=leave_type, year=al_year).first()
+            if al_balance:
+                from django.db.models import Sum
+                others = LeaveApplication.objects.filter(
+                    employee=employee, leave_type=leave_type, start_date__year=al_year)
+                if exclude_id:
+                    others = others.exclude(pk=exclude_id)
+                has_long_block = others.filter(
+                    status__in=['approved', 'pending'], total_days__gte=14).exists()
+                pending_days = others.filter(status='pending').aggregate(
+                    s=Sum('total_days'))['s'] or Decimal('0')
+                remaining_now = al_balance.available - pending_days
+                remaining_after = remaining_now - total_days
+                # If fewer than 14 days are left already (a part-year joiner, or older data),
+                # a 14-day block is no longer possible, so the rule cannot apply.
+                if not has_long_block and total_days < 14 and remaining_now >= 14 and remaining_after < 14:
+                    pend = f' and {float(pending_days):g} days already pending' if pending_days else ''
                     raise LeaveValidationError(
-                        f'You must retain at least 14 days for a consecutive annual leave block. '
-                        f'Remaining after this application: {float(remaining_after):.1f} days. '
-                        f'Please ensure you take at least 14 consecutive AL days at some point this year.',
+                        f'Annual leave must include one block of at least 14 days in a row each year, '
+                        f'and you have not taken it yet. After this application{pend} you would have '
+                        f'{float(remaining_after):g} days left, which is less than 14. '
+                        f'Please apply for the 14-day block first, or apply for fewer days.',
                         'end_date',
                     )
-            except LeaveBalance.DoesNotExist:
-                pass  # No balance record — skip this check
 
         # Rule 11 — annual leave split limit (Engro, 15 Oct 2026): juniors 6, seniors 8.
         # Each AL application is one split. Approved splits plus applications still
