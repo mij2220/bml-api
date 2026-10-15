@@ -116,3 +116,76 @@ class TestFourteenDayBlock:
     def test_already_below_14_not_locked_out(self, org, client_for):
         set_bal(org, org.op1, 10)                              # part-year joiner
         assert apply(client_for(org.op1), org.AL, 10, days=2).status_code == 201
+
+
+class TestSupervisorEmployeesAndAdjust:
+    """Engro, 15 Oct: Supervisors and SICs see their team's employees and adjust
+    their leave balances themselves (with a reason), without Admin."""
+
+    def bal(self, emp, lt):
+        return LeaveBalance.objects.get(employee=emp, leave_type=lt, year=today().year)
+
+    def test_supervisor_lists_only_team(self, org, client_for):
+        r = client_for(org.sup).get(f'{API}/employees/')
+        ids = {e['id'] for e in r.data['data']}
+        assert str(org.op1.id) in ids and str(org.op_b.id) not in ids
+
+    def test_supervisor_opens_team_member_not_others(self, org, client_for):
+        c = client_for(org.sup)
+        assert c.get(f'{API}/employees/{org.op1.id}/').status_code == 200
+        assert c.get(f'{API}/employees/{org.op1.id}/balances/').status_code == 200
+        assert c.get(f'{API}/employees/{org.op_b.id}/').status_code == 404
+        assert c.get(f'{API}/employees/{org.op_b.id}/balances/').status_code == 404
+
+    def test_operator_cannot_open_someone_else(self, org, client_for):
+        c = client_for(org.op1)
+        assert c.get(f'{API}/employees/{org.op2.id}/').status_code == 404
+        assert c.get(f'{API}/employees/{org.op2.id}/balances/').status_code == 404
+        assert c.get(f'{API}/employees/{org.op1.id}/').status_code == 200
+
+    def test_supervisor_adjusts_team_member_with_reason(self, org, client_for):
+        from apps.leaves.models import LeaveQuotaLog
+        before = self.bal(org.op1, org.CD).allocated
+        r = client_for(org.sup).post(f'{API}/employees/{org.op1.id}/balances/', {
+            'leave_type_id': str(org.CD.id), 'adjustment': 2, 'note': 'Worked on rest day 12 Oct'}, format='json')
+        assert r.status_code == 200, r.data
+        assert self.bal(org.op1, org.CD).allocated == before + 2
+        log = LeaveQuotaLog.objects.get(employee=org.op1, leave_type=org.CD)
+        assert log.triggered_by == 'supervisor' and 'Worked on rest day' in log.reason
+
+    def test_sic_adjusts_team_member(self, org, client_for):
+        r = client_for(org.sic).post(f'{API}/employees/{org.op1.id}/balances/', {
+            'leave_type_id': str(org.CD.id), 'adjustment': -1, 'note': 'Correction'}, format='json')
+        assert r.status_code == 200, r.data
+
+    def test_reason_required_for_supervisor(self, org, client_for):
+        r = client_for(org.sup).post(f'{API}/employees/{org.op1.id}/balances/', {
+            'leave_type_id': str(org.CD.id), 'adjustment': 2, 'note': ' '}, format='json')
+        assert r.status_code == 400
+
+    def test_supervisor_cannot_adjust_outside_team_or_self(self, org, client_for):
+        c = client_for(org.sup)
+        body = {'leave_type_id': str(org.CD.id), 'adjustment': 2, 'note': 'x reason'}
+        assert c.post(f'{API}/employees/{org.op_b.id}/balances/', body, format='json').status_code == 404
+        assert c.post(f'{API}/employees/{org.sup.id}/balances/', body, format='json').status_code == 403
+
+    def test_operator_cannot_adjust(self, org, client_for):
+        r = client_for(org.op1).post(f'{API}/employees/{org.op2.id}/balances/', {
+            'leave_type_id': str(org.CD.id), 'adjustment': 2, 'note': 'x'}, format='json')
+        assert r.status_code == 403
+
+    def test_admin_adjusts_anyone_without_reason(self, org, client_for):
+        r = client_for(org.admin).post(f'{API}/employees/{org.op_b.id}/balances/', {
+            'leave_type_id': str(org.CD.id), 'adjustment': 1}, format='json')
+        assert r.status_code == 200, r.data
+
+    def test_bad_numbers_refused(self, org, client_for):
+        c = client_for(org.sup)
+        for adj in (0, 'NaN', 1000):
+            r = c.post(f'{API}/employees/{org.op1.id}/balances/', {
+                'leave_type_id': str(org.CD.id), 'adjustment': adj, 'note': 'reason'}, format='json')
+            assert r.status_code == 400, adj
+
+    def test_supervisor_cannot_edit_profile(self, org, client_for):
+        r = client_for(org.sup).patch(f'{API}/employees/{org.op1.id}/', {'status': 'inactive'}, format='json')
+        assert r.status_code == 403
