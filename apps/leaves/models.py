@@ -272,3 +272,24 @@ class LeaveSettings(models.Model):
     def get(cls):
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+class HolidayCompensation(BaseModel):
+    """A compensatory day given for working on a gazetted holiday (Engro, 15 Oct 2026).
+    One per person per holiday; the day is added to the person's CD balance."""
+    employee = models.ForeignKey(
+        'employees.Employee', on_delete=models.CASCADE, related_name='holiday_compensations')
+    holiday = models.ForeignKey(
+        PublicHoliday, on_delete=models.PROTECT, related_name='compensations')
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name='+')
+    days = models.DecimalField(max_digits=4, decimal_places=2, default=1)
+    granted_by = models.ForeignKey(
+        'employees.Employee', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    note = models.CharField(max_length=200, blank=True, default='')
+
+    class Meta:
+        ordering = ['-holiday__date']
+        constraints = [models.UniqueConstraint(fields=['employee', 'holiday'], name='one_compensation_per_holiday')]
+
+    def __str__(self):
+        return f'{self.employee.full_name} — {self.holiday}'
