@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 from apps.core.models import BaseModel
 
 ACCRUAL_CHOICES = [
@@ -293,3 +294,19 @@ class HolidayCompensation(BaseModel):
 
     def __str__(self):
         return f'{self.employee.full_name} — {self.holiday}'
+
+
+class LeaveCertificate(models.Model):
+    """Medical certificate (or other supporting document) for a leave application,
+    kept in the database so it is never lost on a redeploy and moves with the data.
+    Engro (16 Oct 2026): sick leave of more than 2 days needs one."""
+    application = models.OneToOneField(LeaveApplication, on_delete=models.CASCADE, related_name='certificate')
+    file_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100)
+    size = models.PositiveIntegerField()
+    data = models.BinaryField()
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'{self.file_name} ({self.application_id})'

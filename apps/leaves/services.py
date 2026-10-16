@@ -310,12 +310,14 @@ class LeaveApplicationService:
     @staticmethod
     def validate_application(employee, leave_type, start_date, end_date,
                               is_half_day=False, hours_requested=None, skip_notice=False,
-                              doctor_approval=False, exclude_id=None):
+                              doctor_approval=False, exclude_id=None, has_certificate=False):
         """
         Apply all validation rules. Raises LeaveValidationError on failure.
         doctor_approval=True: allows SL application beyond 16-day quota.
         exclude_id: the application being edited or resubmitted, so that it is
         not counted as overlapping with itself.
+        has_certificate: a medical certificate is attached (needed for sick leave
+        of more than 2 days).
         """
         today = timezone.now().date()
 
@@ -459,6 +461,15 @@ class LeaveApplicationService:
                         'leave_type',
                     )
 
+        # Rule 12 — sick leave (Engro, 16 Oct 2026): at most 2 days in one go without a
+        # medical certificate; more only when a doctor allows it and the certificate is attached.
+        if leave_type.code == 'SL' and total_days > SL_DAYS_WITHOUT_CERTIFICATE and not has_certificate:
+            raise LeaveValidationError(
+                f'Sick leave of more than {SL_DAYS_WITHOUT_CERTIFICATE} days needs a medical certificate. '
+                f'Choose "With Medical Certificate" and attach it, or apply for {SL_DAYS_WITHOUT_CERTIFICATE} days or fewer.',
+                'attachment',
+            )
+
         return total_days
 
     # ── Submit ─────────────────────────────────────────────────
@@ -469,10 +480,12 @@ class LeaveApplicationService:
                            reason, is_half_day=False, half_day_period=None,
                            hours_requested=None, duty_date_for_cd=None,
                            doctor_approval=False, shift_incharge_id=None, attachment=None, request=None,
-                           contact_during_leave='', address_during_leave=''):
+                           contact_during_leave='', address_during_leave='', certificate=None):
+        if certificate is not None:
+            check_certificate_file(certificate)
         total_days = LeaveApplicationService.validate_application(
             employee, leave_type, start_date, end_date, is_half_day, hours_requested,
-            doctor_approval=doctor_approval
+            doctor_approval=doctor_approval, has_certificate=certificate is not None,
         )
 
         # Phase 2: Auto-assign L2 approver from employee.shift_incharge
@@ -500,6 +513,8 @@ class LeaveApplicationService:
             current_approval_level=1,
             created_by=request.user if request else None,
         )
+        if certificate is not None:
+            store_certificate(application, certificate, request.user if request else None)
 
         # Sequential approval: only the Shift Supervisor (Level 1) is told now.
         # The SIC is notified when the Supervisor approves (see approve()).
@@ -723,7 +738,7 @@ class LeaveApplicationService:
 
     @staticmethod
     @transaction.atomic
-    def update_application(application, employee, changes, request=None):
+    def update_application(application, employee, changes, request=None, certificate=None):
         """Employee edits their own application.
 
         Allowed only (a) while it is still waiting for the Supervisor and nobody
@@ -785,7 +800,11 @@ class LeaveApplicationService:
             skip_notice=(application.start_date == original_start),
             doctor_approval=bool(changes.get('doctor_approval', False)),
             exclude_id=application.pk,
+            has_certificate=certificate is not None or has_certificate(application),
         )
+        if certificate is not None:
+            store_certificate(application, certificate, request.user if request else None)
+            changed = True
 
         from apps.notifications.services import NotificationService
         from apps.core.utils import log_action
@@ -1157,3 +1176,44 @@ def get_team_leave_dashboard(manager_employee, user, year=None, search=''):
         'leave_types': [{'code': lt.code, 'name': lt.name, 'color': lt.color} for lt in leave_types],
         'employees': rows,
     }
+
+
+# ── Medical certificates ─────────────────────────────────────────
+
+SL_DAYS_WITHOUT_CERTIFICATE = 2
+CERTIFICATE_MAX_BYTES = 5 * 1024 * 1024
+CERTIFICATE_TYPES = {
+    'application/pdf': '.pdf', 'image/jpeg': '.jpg', 'image/png': '.png',
+}
+
+
+def check_certificate_file(f):
+    """Refuse anything that is not a PDF / JPG / PNG of at most 5 MB."""
+    ctype = (getattr(f, 'content_type', '') or '').lower()
+    name = (getattr(f, 'name', '') or '').lower()
+    if ctype not in CERTIFICATE_TYPES and not name.endswith(('.pdf', '.jpg', '.jpeg', '.png')):
+        raise LeaveValidationError('The certificate must be a PDF, JPG or PNG file.', 'attachment')
+    if (getattr(f, 'size', 0) or 0) > CERTIFICATE_MAX_BYTES:
+        raise LeaveValidationError('The certificate file is too large (maximum 5 MB).', 'attachment')
+    if (getattr(f, 'size', 0) or 0) == 0:
+        raise LeaveValidationError('The certificate file is empty.', 'attachment')
+
+
+def store_certificate(application, f, user=None):
+    """Save (or replace) the certificate of an application in the database."""
+    from .models import LeaveCertificate
+    check_certificate_file(f)
+    data = f.read()
+    ctype = (getattr(f, 'content_type', '') or '').lower()
+    if ctype not in CERTIFICATE_TYPES:
+        n = (f.name or '').lower()
+        ctype = 'application/pdf' if n.endswith('.pdf') else 'image/png' if n.endswith('.png') else 'image/jpeg'
+    LeaveCertificate.objects.update_or_create(application=application, defaults={
+        'file_name': (f.name or 'certificate')[-255:], 'content_type': ctype,
+        'size': len(data), 'data': data, 'uploaded_by': user,
+    })
+
+
+def has_certificate(application):
+    from .models import LeaveCertificate
+    return LeaveCertificate.objects.filter(application=application).exists() or bool(application.attachment)
