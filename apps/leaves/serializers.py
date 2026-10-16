@@ -98,7 +98,26 @@ class WorkflowFieldsMixin(serializers.Serializer):
         return application_permissions(obj, user, self._approvals(obj))
 
 
-class LeaveApplicationListSerializer(WorkflowFieldsMixin, serializers.ModelSerializer):
+class CertificateFieldsMixin(serializers.Serializer):
+    """Whether a medical certificate is attached (file kept in the database)."""
+    has_certificate = serializers.SerializerMethodField()
+    certificate_name = serializers.SerializerMethodField()
+
+    def _cert(self, obj):
+        if not hasattr(obj, '_cert_cache'):
+            from .models import LeaveCertificate
+            obj._cert_cache = LeaveCertificate.objects.filter(application=obj).only('file_name').first()
+        return obj._cert_cache
+
+    def get_has_certificate(self, obj):
+        return self._cert(obj) is not None
+
+    def get_certificate_name(self, obj):
+        c = self._cert(obj)
+        return c.file_name if c else None
+
+
+class LeaveApplicationListSerializer(CertificateFieldsMixin, WorkflowFieldsMixin, serializers.ModelSerializer):
     employee_name = serializers.CharField(source='employee.full_name', read_only=True)
     employee_id_code = serializers.CharField(source='employee.employee_id', read_only=True)
     employee_p_number = serializers.CharField(source='employee.p_number', read_only=True, default=None)
@@ -130,11 +149,11 @@ class LeaveApplicationListSerializer(WorkflowFieldsMixin, serializers.ModelSeria
             'is_half_day', 'applied_at', 'current_approval_level',
             'replacement_employee', 'duty_date_for_cd',
             'stage', 'stage_label', 'returned_remark', 'returned_by', 'permissions',
-            'cancel_reason', 'cancelled_by_name',
+            'cancel_reason', 'cancelled_by_name', 'has_certificate', 'certificate_name',
         ]
 
 
-class LeaveApplicationDetailSerializer(WorkflowFieldsMixin, serializers.ModelSerializer):
+class LeaveApplicationDetailSerializer(CertificateFieldsMixin, WorkflowFieldsMixin, serializers.ModelSerializer):
     employee_name = serializers.CharField(source='employee.full_name', read_only=True)
     leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
     leave_type_color = serializers.CharField(source='leave_type.color', read_only=True)
@@ -180,6 +199,7 @@ class LeaveApplicationDetailSerializer(WorkflowFieldsMixin, serializers.ModelSer
             'attachment', 'attachment_url', 'employee_id_code', 'department', 'status', 'applied_at', 'current_approval_level', 'approvals', 'duty_date_for_cd',
             'leave_type_code', 'stage', 'stage_label', 'returned_remark', 'returned_by',
             'waiting_for', 'permissions', 'cancel_reason', 'cancelled_by_name',
+            'has_certificate', 'certificate_name',
         ]
 
 

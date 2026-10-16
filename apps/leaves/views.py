@@ -200,7 +200,7 @@ class LeaveApplicationListView(APIView):
                 duty_date_for_cd=d.get('duty_date_for_cd'),
                 doctor_approval=d.get('doctor_approval', False),
                 shift_incharge_id=d.get('shift_incharge_id'),
-                attachment=request.FILES.get('attachment'),
+                certificate=request.FILES.get('attachment'),
                 request=request,
                 contact_during_leave=d.get('contact_during_leave', ''),
                 address_during_leave=d.get('address_during_leave', ''),
@@ -263,7 +263,8 @@ class LeaveApplicationDetailView(APIView):
         was_returned = app.status == 'returned'
         try:
             from .services import LeaveApplicationService
-            app = LeaveApplicationService.update_application(app, emp, d, request)
+            app = LeaveApplicationService.update_application(
+                app, emp, d, request, certificate=request.FILES.get('attachment'))
         except Exception as e:
             return _service_error(e)
         app = self._get(pk)
@@ -365,19 +366,54 @@ class LeaveCancelView(APIView):
 
 
 class LeaveAttachmentView(APIView):
+    """GET: the medical certificate of an application (whoever may see the application).
+    POST: the employee adds or replaces the certificate while the application is
+    still waiting or was returned. Files are kept in the database."""
     permission_classes = [IsEmployee]
     parser_classes = [MultiPartParser, FormParser]
 
-    def post(self, request, pk):
-        try:
-            app = LeaveApplication.objects.get(pk=pk)
-        except LeaveApplication.DoesNotExist:
+    def _app(self, pk):
+        return LeaveApplication.objects.select_related('employee').filter(pk=pk).first()
+
+    def get(self, request, pk):
+        from django.http import HttpResponse
+        from .services import can_view_application
+        from .models import LeaveCertificate
+        app = self._app(pk)
+        if app is None:
             return error('Application not found.', status=404)
-        if 'attachment' not in request.FILES:
+        if not can_view_application(request.user, app):
+            return error('You do not have access to this leave application.', status=403)
+        cert = LeaveCertificate.objects.filter(application=app).first()
+        if cert is None:
+            return error('No certificate is attached to this application.', status=404)
+        resp = HttpResponse(bytes(cert.data), content_type=cert.content_type)
+        safe = ''.join(c for c in cert.file_name if c.isalnum() or c in '._- ') or 'certificate'
+        resp['Content-Disposition'] = f'inline; filename="{safe}"'
+        resp['X-Content-Type-Options'] = 'nosniff'
+        return resp
+
+    def post(self, request, pk):
+        from .services import store_certificate, LeaveValidationError
+        from apps.core.utils import log_action
+        app = self._app(pk)
+        if app is None:
+            return error('Application not found.', status=404)
+        emp = getattr(request.user, 'employee_profile', None)
+        if emp is None or app.employee_id != emp.pk:
+            return error('You can only attach a certificate to your own application.', status=403)
+        if app.status not in ('pending', 'returned'):
+            return error(f'A {app.status} application cannot be changed.', status=400)
+        f = request.FILES.get('attachment')
+        if f is None:
             return error('No file provided.', status=400)
-        attachment = request.FILES.get('attachment')
-        app.save()
-        return success({'attachment': getattr(app, "attachment", None).url if getattr(app, "attachment", None) else None})
+        try:
+            store_certificate(app, f, request.user)
+        except LeaveValidationError as e:
+            return error(str(e), status=400)
+        log_action(request, 'leave.certificate_attached', 'LeaveApplication', app.pk, {'file': f.name})
+        return success({'has_certificate': True}, 'Certificate attached.')
+
 
 class PendingApprovalsView(APIView):
     permission_classes = [IsManager]

@@ -2,9 +2,9 @@
 ExperienceService — calculates experience-based leave quotas.
 
 Rules (from client policy):
-  - < 5 years total experience → AL quota = 21/yr, splits = 5
-  - >= 5 years total experience → AL quota = 30/yr, splits = 7
-  - SL: always 16/yr, splits = 8, max 2 days per split
+  - up to and including 5 years → AL quota = 21/yr, splits = 6 (junior)
+  - more than 5 years (from the day after the 5th anniversary) → 30/yr, splits = 8 (senior)
+  - SL: always 16/yr, splits = 8; more than 2 days in one go needs a medical certificate
   - CL: always 10/yr, no splits
   - CD: 2 per month (replenished monthly by Celery task)
   - BD: 1 per year
@@ -20,8 +20,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from dateutil.relativedelta import relativedelta
 
 
-JUNIOR_AL = Decimal('21')   # < 5 years
-SENIOR_AL = Decimal('30')   # >= 5 years
+JUNIOR_AL = Decimal('21')   # up to and including 5 years
+SENIOR_AL = Decimal('30')   # more than 5 years
 JUNIOR_SPLITS = 6
 SENIOR_SPLITS = 8
 EXPERIENCE_THRESHOLD_YEARS = 5
@@ -47,10 +47,22 @@ class ExperienceService:
         return Decimal(str(round(years, 4)))
 
     @staticmethod
+    def senior_from(employee):
+        """First day on which the person is senior. Engro (Adan Habib, 16 Oct 2026):
+        juniors have up to and including 5 years, seniors more than 5 - so the day
+        after the 5th anniversary. None if no start date is known."""
+        start = employee.experience_start_date or employee.joining_date
+        if not start:
+            return None
+        return start + relativedelta(years=EXPERIENCE_THRESHOLD_YEARS) + relativedelta(days=1)
+
+    @staticmethod
     def get_experience_tier(employee, at_date=None):
         """Returns 'junior' or 'senior'."""
-        years = ExperienceService.get_experience_years(employee, at_date)
-        return 'senior' if years >= EXPERIENCE_THRESHOLD_YEARS else 'junior'
+        if at_date is None:
+            at_date = date.today()
+        first = ExperienceService.senior_from(employee)
+        return 'senior' if first is not None and at_date >= first else 'junior'
 
     @staticmethod
     def get_al_quota_for_year(employee, year):
@@ -81,14 +93,11 @@ class ExperienceService:
         year_start = date(year, 1, 1)
         year_end = date(year, 12, 31)
 
-        # Date when employee crosses the 5-year threshold
-        threshold_date = start + relativedelta(years=EXPERIENCE_THRESHOLD_YEARS)
-
-        exp_at_year_start = ExperienceService.get_experience_years(employee, year_start)
-        exp_at_year_end = ExperienceService.get_experience_years(employee, year_end)
+        # First day as a senior (the day after the 5th anniversary)
+        threshold_date = ExperienceService.senior_from(employee)
 
         # Case 1: Already senior at start of year
-        if exp_at_year_start >= EXPERIENCE_THRESHOLD_YEARS:
+        if threshold_date <= year_start:
             return {
                 'allocated': SENIOR_AL,
                 'splits_allowed': SENIOR_SPLITS,
@@ -99,7 +108,7 @@ class ExperienceService:
             }
 
         # Case 2: Still junior at end of year
-        if exp_at_year_end < EXPERIENCE_THRESHOLD_YEARS:
+        if threshold_date > year_end:
             return {
                 'allocated': JUNIOR_AL,
                 'splits_allowed': JUNIOR_SPLITS,
