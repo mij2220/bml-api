@@ -492,6 +492,8 @@ class SpreadGroupsView(APIView):
             return error('Days are already locked for this section, so the rotation cannot change. '
                          'Use roster changes for single days instead.')
         groups = list(section.groups.all().order_by('order', 'name'))
+        if request.data.get('preset') == 'engro_2026':
+            return self._engro_2026(request, section, groups)
         n = len(section.pattern_list or [])
         if not groups or not n:
             return error('Add the rotation and the groups first.')
@@ -503,3 +505,26 @@ class SpreadGroupsView(APIView):
         log_action(request, 'shifts.spread_groups', 'Section', section.pk,
                    {'pattern': section.pattern, 'offsets': {g.name: g.offset for g in groups}})
         return success({'offsets': {g.name: g.offset for g in groups}}, 'Groups placed evenly over the rotation.')
+
+    def _engro_2026(self, request, section, groups):
+        """Engro's "Production Department Shift Schedule 2026" (shared by Engro on 16 Oct 2026):
+        each crew works 6 Morning, 2 off, 6 Night, 2 off, 6 Evening, 2 off; cycle day 1 is
+        1 Jan 2026 with A on Morning, B Evening, C Night, D Off."""
+        names = {g.name.strip().upper(): g for g in groups}
+        if set(names) != set(ENGRO_2026_OFFSETS):
+            return error('This schedule needs exactly four groups named A, B, C and D.')
+        section.pattern = ENGRO_2026_PATTERN
+        section.pattern_anchor = date(2026, 1, 1)
+        section.save(update_fields=['pattern', 'pattern_anchor'])
+        for name, off in ENGRO_2026_OFFSETS.items():
+            names[name].offset = off
+            names[name].save(update_fields=['offset'])
+        log_action(request, 'shifts.spread_groups', 'Section', section.pk,
+                   {'preset': 'engro_2026', 'pattern': section.pattern, 'offsets': ENGRO_2026_OFFSETS})
+        return success({'offsets': ENGRO_2026_OFFSETS}, "Engro's 2026 shift schedule applied to groups A-D.")
+
+
+ENGRO_2026_PATTERN = ','.join(['M'] * 6 + ['O'] * 2 + ['N'] * 6 + ['O'] * 2 + ['E'] * 6 + ['O'] * 2)
+# Position of each crew in the rotation on 1 Jan 2026 (A = 2nd Morning, D = 2nd off after
+# Mornings, C = 6th Night, B = 4th Evening) - read from Engro's PDF / Excel.
+ENGRO_2026_OFFSETS = {'A': 1, 'B': 19, 'C': 13, 'D': 7}

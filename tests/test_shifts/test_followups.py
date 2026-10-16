@@ -231,3 +231,29 @@ class TestManpowerAndNotices:
         t = client_for(plant.manager).get(f'{API}/shifts/todo/').data['data']
         assert t['to_lock'] == 1
         assert client_for(plant.boardman).get(f'{API}/shifts/todo/').data['data']['to_lock'] == 0
+
+
+# ---------------------------------------------------------------- Engro 2026 schedule
+# Engro's "Pattern" sheet (Shift_Schedule_2026.xlsx): cycle day -> crew on Morning, Evening, Night, Off
+ENGRO_CYCLE = ['ABCD', 'ABDC', 'ABDC', 'ACDB', 'ACDB', 'BCDA', 'BCDA', 'BCAD', 'BCAD', 'BDAC', 'BDAC', 'CDAB',
+               'CDAB', 'CDBA', 'CDBA', 'CABD', 'CABD', 'DABC', 'DABC', 'DACB', 'DACB', 'DBCA', 'DBCA', 'ABCD']
+
+
+class TestEngro2026Schedule:
+
+    def test_every_day_of_2026_matches_engro_pdf(self, plant, client_for):
+        from apps.shifts import roster
+        r = client_for(plant.org.admin).post(f'{API}/shifts/admin/sections/{plant.section.pk}/spread-groups/',
+                                             {'preset': 'engro_2026'}, format='json')
+        assert r.status_code == 200, r.data
+        plant.section.refresh_from_db()
+        groups = {g.name: g for g in plant.section.groups.all()}
+        d = date(2026, 1, 1)
+        while d.year == 2026:
+            want = ENGRO_CYCLE[(d - date(2026, 1, 1)).days % 24]
+            for code, crew in zip('MENO', want):
+                assert roster.shift_on(plant.section, groups[crew], d) == code, (d, crew, code)
+            d += timedelta(days=1)
+        # spot checks from the Daily Schedule sheet
+        assert roster.shift_on(plant.section, groups['A'], date(2026, 12, 31)) == 'M'
+        assert roster.shift_on(plant.section, groups['C'], date(2026, 12, 31)) == 'E'
