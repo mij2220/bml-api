@@ -6,13 +6,44 @@ from datetime import timedelta
 from django.db.models import Q
 
 
+def _changes(section):
+    """Rotation changes of the section, oldest first (cached on the object)."""
+    cache = section.__dict__.get('_rotation_changes')
+    if cache is None:
+        from .models import RotationChange
+        cache = list(RotationChange.objects.filter(section_id=section.pk).order_by('start_date')) if section.pk else []
+        section.__dict__['_rotation_changes'] = cache
+    return cache
+
+
+def rotation_on(section, day):
+    """(pattern list, anchor, change or None) in force on `day`."""
+    current = None
+    for ch in _changes(section):
+        if ch.start_date <= day:
+            current = ch
+        else:
+            break
+    if current is None:
+        return section.pattern_list, section.pattern_anchor, None
+    return current.pattern_list, current.pattern_anchor, current
+
+
+def pattern_for(section, day):
+    return rotation_on(section, day)[0]
+
+
 def pattern_position(section, group, day):
-    pat = section.pattern_list or ['O']
-    return ((day - section.pattern_anchor).days + group.offset) % len(pat)
+    pat, anchor, ch = rotation_on(section, day)
+    pat = pat or ['O']
+    offset = group.offset
+    if ch is not None and str(group.pk) in (ch.offsets or {}):
+        offset = int(ch.offsets[str(group.pk)])
+    return ((day - anchor).days + offset) % len(pat)
 
 
 def base_shift(section, group, day):
-    pat = section.pattern_list or ['O']
+    pat = pattern_for(section, day) or ['O']
     return pat[pattern_position(section, group, day)]
 
 
@@ -39,7 +70,7 @@ def overrides_map(section, start, end):
 def off_day_kind(section, group, day):
     """'FO' for the first Off day of a run in the pattern, 'SO' for the second
     (and any later) one, None when the pattern has a working shift that day."""
-    pat = section.pattern_list
+    pat = pattern_for(section, day)
     if not pat:
         return None
     i = pattern_position(section, group, day)
@@ -54,7 +85,7 @@ def crew_cycle(section, group, day):
     working shifts and the off days that follow it. For the 8-day rota
     M,M,E,E,N,N,O,O that is the whole cycle; for Engro's 24-day rota
     (6 M, 2 off, 6 E, 2 off, 6 N, 2 off) it is each 8-day block."""
-    pat = section.pattern_list
+    pat = pattern_for(section, day)
     n = len(pat) or 1
     if not pat or 'O' not in pat or all(c == 'O' for c in pat):
         first = day - timedelta(days=pattern_position(section, group, day))

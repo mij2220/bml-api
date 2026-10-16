@@ -257,3 +257,57 @@ class TestEngro2026Schedule:
         # spot checks from the Daily Schedule sheet
         assert roster.shift_on(plant.section, groups['A'], date(2026, 12, 31)) == 'M'
         assert roster.shift_on(plant.section, groups['C'], date(2026, 12, 31)) == 'E'
+
+
+# ---------------------------------------------------------------- yearly rotation change
+class TestRotationChange:
+
+    def _engro(self, plant, client_for):
+        r = client_for(plant.org.admin).post(f'{API}/shifts/admin/sections/{plant.section.pk}/spread-groups/',
+                                             {'preset': 'engro_2026'}, format='json')
+        assert r.status_code == 200
+        plant.section.refresh_from_db()
+
+    def test_continue_keeps_every_group_where_it_is(self, plant, client_for):
+        from apps.shifts import roster
+        self._engro(plant, client_for)
+        groups = list(plant.section.groups.all())
+        before = {g.name: [roster.shift_on(plant.section, g, date(2027, 1, 1) + timedelta(days=i)) for i in range(60)] for g in groups}
+        r = client_for(plant.org.admin).post(f'{API}/shifts/admin/sections/{plant.section.pk}/rotation-changes/',
+                                             {'start_date': '2027-01-01', 'mode': 'continue'}, format='json')
+        assert r.status_code == 200, r.data
+        from apps.shifts.models import Section
+        plant.section = Section.objects.get(pk=plant.section.pk)
+        after = {g.name: [roster.shift_on(plant.section, g, date(2027, 1, 1) + timedelta(days=i)) for i in range(60)] for g in groups}
+        assert before == after
+
+    def test_new_rotation_only_from_its_date(self, plant, client_for):
+        from apps.shifts import roster
+        self._engro(plant, client_for)
+        a = plant.section.groups.get(name='A')
+        old_dec = roster.shift_on(plant.section, a, date(2026, 12, 31))
+        r = client_for(plant.org.admin).post(f'{API}/shifts/admin/sections/{plant.section.pk}/rotation-changes/',
+                                             {'start_date': '2027-01-01', 'pattern': 'M,M,E,E,N,N,O,O',
+                                              'offsets': {'A': 0, 'B': 2, 'C': 4, 'D': 6}}, format='json')
+        assert r.status_code == 200, r.data
+        from apps.shifts.models import Section
+        plant.section = Section.objects.get(pk=plant.section.pk)     # fresh object: changes are cached per object
+        assert roster.shift_on(plant.section, a, date(2026, 12, 31)) == old_dec
+        assert [roster.shift_on(plant.section, a, date(2027, 1, d)) for d in range(1, 9)] == list('MMEENNOO')
+        # the year schedule uses it too
+        s = client_for(plant.org.admin).get(f'{API}/shifts/schedule/', {'section': str(plant.section.pk), 'year': 2027}).data['data']
+        row = next(x for x in s['rows'] if x['group'] == 'A')
+        assert ''.join(row['shifts'][:8]) == 'MMEENNOO'
+
+    def test_refused_on_locked_days_and_for_non_admin(self, plant, client_for):
+        url = f'{API}/shifts/admin/sections/{plant.section.pk}/rotation-changes/'
+        assert client_for(plant.manager).post(url, {'start_date': '2027-01-01'}, format='json').status_code == 403
+        full_flow(plant, D1)
+        r = client_for(plant.org.admin).post(url, {'start_date': str(D1)}, format='json')
+        assert r.status_code == 400 and 'locked' in r.data['message']
+        ok = client_for(plant.org.admin).post(url, {'start_date': str(D1 + timedelta(days=1))}, format='json')
+        assert ok.status_code == 200
+        lst = client_for(plant.org.admin).get(url).data['data']
+        assert len(lst['changes']) == 1 and lst['last_locked'] == str(D1)
+        d = client_for(plant.org.admin).delete(url + f"?id={lst['changes'][0]['id']}")
+        assert d.status_code == 200

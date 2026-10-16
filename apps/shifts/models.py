@@ -50,6 +50,27 @@ class Section(BaseModel):
         return [p.strip().upper() for p in self.pattern.split(',') if p.strip()]
 
 
+class RotationChange(BaseModel):
+    """A new rotation for a section from a date on (Engro, 16 Oct 2026: "the
+    schedule changes every year, Admin needs an option to update it"). Days
+    before `start_date` keep the earlier rotation; locked days never change."""
+    section = models.ForeignKey(Section, on_delete=models.CASCADE, related_name='rotation_changes')
+    start_date = models.DateField()
+    pattern = models.CharField(max_length=200)
+    pattern_anchor = models.DateField()
+    # {group id: offset} at the time of the change; groups not listed keep their own offset.
+    offsets = models.JSONField(default=dict, blank=True)
+    note = models.CharField(max_length=200, blank=True, default='')
+
+    class Meta:
+        ordering = ['section', 'start_date']
+        constraints = [models.UniqueConstraint(fields=['section', 'start_date'], name='uniq_rotation_change_day')]
+
+    @property
+    def pattern_list(self):
+        return [p.strip().upper() for p in self.pattern.split(',') if p.strip()]
+
+
 class ShiftType(BaseModel):
     PREMIUM_CHOICES = [('none', 'None'), ('evening', 'Evening'), ('night', 'Night')]
     section = models.ForeignKey(Section, on_delete=models.CASCADE, related_name='shift_types')

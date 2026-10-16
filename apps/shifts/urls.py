@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import SimpleRouter
-from . import views as v, admin_views as a, followups as f
+from . import views as v, admin_views as a, followups as f, rotation
 
 router = SimpleRouter()
 router.register('shifts/admin/sections', a.SectionAdminViewSet, basename='shift-admin-section')
@@ -37,6 +37,7 @@ urlpatterns = [
     path('shifts/todo/', f.TodoView.as_view()),
     path('overtime/calculator/', f.CalculatorView.as_view()),
     path('shifts/admin/sections/<uuid:pk>/spread-groups/', f.SpreadGroupsView.as_view()),
+    path('shifts/admin/sections/<uuid:pk>/rotation-changes/', rotation.RotationChangesView.as_view()),
     path('shifts/admin/settings/', a.ModuleSettingsView.as_view()),
     path('shifts/admin/holidays/', a.HolidaysView.as_view()),
     path('shifts/admin/members-import/', a.MembersImportView.as_view()),
