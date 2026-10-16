@@ -594,3 +594,70 @@ class TeamBalancesView(APIView):
             'leave_types': [{'code': lt.code, 'name': lt.name} for lt in leave_types],
             'employees': result,
         })
+
+
+class OrganogramImportView(APIView):
+    """Admin > Employees > Load organogram. POST multipart `file` (Engro's
+    organogram Excel) and `apply` = false (preview) / true (load)."""
+    permission_classes = [IsHRAdmin]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from .organogram import read_rows, plan, apply, summary, OrganogramError
+        f = request.FILES.get('file')
+        if f is None:
+            return error('Choose the organogram Excel file.')
+        if f.size > 5 * 1024 * 1024:
+            return error('The file is too large (maximum 5 MB).')
+        try:
+            rows = read_rows(f)
+        except OrganogramError as e:
+            return error(str(e))
+        if not rows:
+            return error('No people found in the file.')
+        if str(request.data.get('apply', '')).lower() in ('1', 'true', 'yes'):
+            planned, logins = apply(rows, request.user)
+            log_action(request, 'employee.organogram_loaded', 'Employee', None,
+                       {'file': f.name, 'summary': summary(planned), 'logins_created': len(logins)})
+            return success({'rows': planned, 'summary': summary(planned), 'logins': logins, 'applied': True},
+                           f'Organogram loaded: {len(logins)} new logins created.')
+        planned = plan(rows)
+        return success({'rows': planned, 'summary': summary(planned), 'applied': False})
+
+
+class OrgChartView(APIView):
+    """Org chart by unit (Engro, 15-16 Oct 2026): Unit Manager > SICs >
+    Shift Supervisors / Engineers > staff. Admin sees every unit; a Supervisor,
+    SIC or Unit Manager sees their own unit(s)."""
+    permission_classes = [IsEmployee]
+
+    def get(self, request):
+        from django.db.models import Q
+        qs = Department.objects.all().order_by('name')
+        if not request.user.is_hr_admin:
+            me = getattr(request.user, 'employee_profile', None)
+            if me is None or not request.user.is_manager_role:
+                return error('Permission denied.', status=403)
+            ids = {me.department_id} | set(me.sic_units.values_list('id', flat=True))
+            qs = qs.filter(id__in=ids)
+        def card(e):
+            return {'id': str(e.pk), 'name': e.full_name, 'p_number': e.p_number or e.employee_id,
+                    'designation': e.designation.name if e.designation_id else '', 'unit_role': e.unit_role or '',
+                    'has_login': e.user.is_active, 'shared': e.user.is_shared_account}
+        units = []
+        for d in qs:
+            people = list(Employee.objects.filter(Q(department=d) | Q(sic_units=d, unit_role='sic'),
+                                                  status__in=['active', 'on_leave'])
+                          .select_related('designation', 'user').distinct().order_by('full_name'))
+            if not people:
+                continue
+            by = {'manager': [], 'sic': [], 'supervisor': [], '': []}
+            for e in people:
+                if e.department_id != d.pk and e.unit_role == 'sic':
+                    by['sic'].append({**card(e), 'covers_from': e.department.name})
+                else:
+                    by.setdefault(e.unit_role or '', []).append(card(e))
+            units.append({'id': str(d.pk), 'name': d.name, 'managers': by['manager'], 'sics': by['sic'],
+                          'supervisors': by['supervisor'], 'staff': by[''], 'total': len(people)})
+        from apps.leaves.models import LeaveSettings
+        return success({'units': units, 'unit_approval': LeaveSettings.get().unit_approval})

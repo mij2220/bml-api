@@ -429,11 +429,10 @@ class PendingApprovalsView(APIView):
         #   * the SIC (Level 2) sees it only after the Supervisor has approved it;
         #   * a request from someone with no Supervisor and no SIC assigned goes to Admin,
         #     so that it never sits in nobody's list.
-        from .services import pending_level, level_approver
+        from .services import pending_level, level_approvers
+        from apps.employees.scope import team_ids
 
-        l1_ids = list(emp.direct_reports.values_list('id', flat=True))
-        l2_ids = list(emp.shift_incharge_for.values_list('id', flat=True))
-        all_team_ids = list(set(l1_ids + l2_ids))
+        all_team_ids = list(team_ids(emp))
         is_admin = request.user.is_hr_admin
 
         candidates = _application_queryset().filter(status='pending').order_by('applied_at')
@@ -449,8 +448,7 @@ class PendingApprovalsView(APIView):
                 if is_admin and app.employee_id != emp.pk:
                     apps.append(app)        # nobody assigned: Admin decides
                 continue
-            approver = level_approver(app, lvl)
-            if approver is not None and approver.pk == emp.pk:
+            if emp.pk in {p.pk for p in level_approvers(app, lvl)}:
                 apps.append(app)
         return success(
             LeaveApplicationListSerializer(apps, many=True, context={'request': request}).data)
@@ -963,20 +961,25 @@ class LeaveSettingsView(APIView):
 
     def get(self, request):
         from .models import LeaveSettings
-        return success({'sic_unit_visibility': LeaveSettings.get().sic_unit_visibility})
+        o = LeaveSettings.get()
+        return success({'sic_unit_visibility': o.sic_unit_visibility, 'unit_approval': o.unit_approval})
 
     def put(self, request):
         from .models import LeaveSettings
         if not request.user.is_hr_admin:
             return error('Permission denied.', status=403)
         obj = LeaveSettings.get()
-        if 'sic_unit_visibility' in request.data:
-            v = request.data['sic_unit_visibility']
-            obj.sic_unit_visibility = v in (True, 'true', 'True', '1', 1)
+        changed = {}
+        for key in ('sic_unit_visibility', 'unit_approval'):
+            if key in request.data:
+                v = request.data[key] in (True, 'true', 'True', '1', 1)
+                if getattr(obj, key) != v:
+                    setattr(obj, key, v)
+                    changed[key] = v
+        if changed:
             obj.save()
-            log_action(request, 'leave.settings_update', 'LeaveSettings', None,
-                       {'sic_unit_visibility': obj.sic_unit_visibility})
-        return success({'sic_unit_visibility': obj.sic_unit_visibility}, 'Saved.')
+            log_action(request, 'leave.settings_update', 'LeaveSettings', None, changed)
+        return success({'sic_unit_visibility': obj.sic_unit_visibility, 'unit_approval': obj.unit_approval}, 'Saved.')
 
 
 class YearEndView(APIView):

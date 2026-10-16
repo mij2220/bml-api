@@ -4,6 +4,8 @@ from apps.core.models import BaseModel
 GENDER_CHOICES = [('male','Male'),('female','Female'),('other','Other')]
 EMPLOYMENT_TYPE_CHOICES = [('permanent','Permanent'),('contractual','Contractual'),
                            ('probation','Probation'),('part_time','Part Time')]
+UNIT_ROLE_CHOICES = [('', 'Staff'), ('supervisor', 'Shift Supervisor / Engineer'),
+                     ('sic', 'Shift In-Charge (SIC)'), ('manager', 'Unit Manager')]
 EMPLOYEE_STATUS_CHOICES = [('active','Active'),('on_leave','On Leave'),
                             ('resigned','Resigned'),('terminated','Terminated')]
 
@@ -82,6 +84,12 @@ class Employee(BaseModel):
     # Units whose whole staff an SIC sees (e.g. the Plant-2 SIC: AMM-3 and UR-3).
     # Visibility only; approvals still follow each person's own Supervisor / SIC.
     sic_units = models.ManyToManyField(Department, blank=True, related_name='sics')
+    # Place in the unit's organogram (Engro, 15-16 Oct 2026). With unit-based
+    # approval switched on, a leave request goes to every Supervisor of the
+    # person's unit, then every SIC, (then the Unit Manager where the leave type
+    # needs three levels) - so approvers follow the unit automatically.
+    unit_role = models.CharField(max_length=20, blank=True, default='', db_default='',
+                                 choices=UNIT_ROLE_CHOICES, db_index=True)
     branch = models.ForeignKey(Branch, null=True, blank=True,
                                on_delete=models.SET_NULL, related_name='employees')
     status = models.CharField(max_length=20, choices=EMPLOYEE_STATUS_CHOICES,
