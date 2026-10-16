@@ -147,8 +147,10 @@ def apply(rows, actor_user=None):
     from apps.employees.models import Employee, Department, Designation
     from apps.accounts.models import User
     from apps.leaves.services import initialize_employee_balances
+    from django.contrib.auth.hashers import make_password
     planned = plan(rows)
     units = {unit_key(d.name): d for d in Department.objects.all()}
+    hashes = {}      # hash each first password once: hundreds of logins must not time out
     logins = []
     counters = {}
     for r in planned:
@@ -188,8 +190,12 @@ def apply(rows, actor_user=None):
         approver = r['unit_role'] in APPROVER_ROLES
         password = 'Manager@1234' if approver else 'Employee@1234'
         email = f'{emp_id.lower()}@{EMAIL_DOMAIN}'
-        user = User.objects.create_user(email=email, password=password,
-                                        role='manager' if approver else 'employee', must_change_password=True)
+        if password not in hashes:
+            hashes[password] = make_password(password)
+        user = User(email=User.objects.normalize_email(email), role='manager' if approver else 'employee',
+                    must_change_password=True)
+        user.password = hashes[password]
+        user.save()
         emp = Employee.objects.create(
             user=user, employee_id=emp_id, p_number=r['p_number'] or None, full_name=r['name'].title() if r['name'].isupper() else r['name'],
             gender='male', joining_date=PLACEHOLDER_JOIN, employment_type='permanent',
