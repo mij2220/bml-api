@@ -6,9 +6,10 @@ from .views import (
     LeaveApproveView, LeaveRejectView, LeaveReturnView, LeaveCancelView,
     TeamLeaveDashboardView,
     PendingApprovalsView, TeamCalendarView, HolidayCalendarView,
-    LeaveAttachmentView, LeavePDFView, LeaveSettingsView,)
+    LeaveAttachmentView, LeavePDFView, LeaveSettingsView, YearEndView,)
 
 urlpatterns = [
+    path('leaves/year-end/', YearEndView.as_view(), name='leave-year-end'),
     path('leave-types/', LeaveTypeListCreateView.as_view(), name='leave-type-list'),
     path('leave-types/<uuid:pk>/', LeaveTypeDetailView.as_view(), name='leave-type-detail'),
     path('leaves/', LeaveApplicationListView.as_view(), name='leave-list'),
