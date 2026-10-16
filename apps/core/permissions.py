@@ -16,7 +16,7 @@ def custom_exception_handler(exc, context):
 class StandardPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
-    max_page_size = 100
+    max_page_size = 1000   # plant: ~300 staff must fit one page in Admin lists
     def get_paginated_response(self, data):
         return Response({
             'success': True, 'data': data, 'message': 'Success', 'errors': None,
