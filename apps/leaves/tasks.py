@@ -87,82 +87,13 @@ def replenish_cd_balances():
 
 @shared_task(name='leaves.year_end_processing')
 def year_end_processing():
-    """
-    Runs on Dec 31 each year.
-    - AL: carry forward unused days up to carryover_limit, reset used=0
-    - CL: reset to 10, no carry forward
-    - SL: reset to 16, no carry forward
-    - BD: reset to 1, no carry forward
-    - Creates new LeaveBalance records for the new year.
-    """
-    import logging
-    from decimal import Decimal
+    """Kept for a Celery beat that may be added later. Same rules as Admin >
+    Quota Management > Year end (apps.leaves.year_end): on 1 January, close the
+    year that just ended - create the new balances and carry forward AL, capped
+    at one year's allocation."""
     from django.utils import timezone
-    from apps.employees.models import Employee
-    from apps.leaves.models import LeaveType, LeaveBalance
-    from apps.leaves.experience import ExperienceService
-
-    logger = logging.getLogger(__name__)
-    current_year = timezone.now().year
-    new_year = current_year + 1
-    processed = 0
-
-    reset_types = {
-        'CL': Decimal('10'),
-        'SL': Decimal('16'),
-        'BD': Decimal('1'),
-        'CD': Decimal('2'),
-        'SHL': Decimal('2'),
-    }
-
-    for employee in Employee.objects.filter(status='active'):
-        try:
-            # AL: carry forward
-            al_type = LeaveType.objects.filter(code='AL').first()
-            if al_type:
-                try:
-                    current_bal = LeaveBalance.objects.get(
-                        employee=employee, leave_type=al_type, year=current_year
-                    )
-                    carry = min(current_bal.available, al_type.carryover_limit)
-                except LeaveBalance.DoesNotExist:
-                    carry = Decimal('0')
-
-                # New year quota based on updated experience
-                quota = ExperienceService.get_al_quota_for_year(employee, new_year)
-                LeaveBalance.objects.get_or_create(
-                    employee=employee,
-                    leave_type=al_type,
-                    year=new_year,
-                    defaults={
-                        'allocated': quota['allocated'],
-                        'carried_over': carry,
-                        'splits_allowed': quota['splits_allowed'],
-                        'splits_used': 0,
-                    }
-                )
-
-            # Other leave types: reset, no carry
-            for code, amount in reset_types.items():
-                lt = LeaveType.objects.filter(code=code).first()
-                if not lt:
-                    continue
-                defaults = {'allocated': amount, 'splits_used': 0}
-                if code == 'SL':
-                    defaults['splits_allowed'] = 8
-                LeaveBalance.objects.get_or_create(
-                    employee=employee,
-                    leave_type=lt,
-                    year=new_year,
-                    defaults=defaults
-                )
-
-            processed += 1
-        except Exception as e:
-            logger.error(f"Year-end error for {employee.employee_id}: {e}")
-
-    logger.info(f"Year-end processing: {processed} employees processed for {new_year}")
-    return {'processed': processed, 'new_year': new_year}
+    from apps.leaves.year_end import carry_forward
+    return carry_forward(timezone.localdate().year - 1)
 
 
 @shared_task(name='leaves.expire_overdue_leaves')

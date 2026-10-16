@@ -13,6 +13,11 @@ def team_ids(manager, include_self=False):
     unit_ids = list(manager.sic_units.values_list('id', flat=True)) if LeaveSettings.get().sic_unit_visibility else []
     if unit_ids:
         ids |= set(Employee.objects.filter(department_id__in=unit_ids).values_list('id', flat=True))
+    # Unit-based approval: Supervisors, SICs and the Unit Manager see their whole
+    # unit (SICs also the units ticked in their record).
+    if manager.unit_role and LeaveSettings.get().unit_approval:
+        units = {manager.department_id} | set(manager.sic_units.values_list('id', flat=True))
+        ids |= set(Employee.objects.filter(department_id__in=units).values_list('id', flat=True))
     ids.discard(manager.id)
     if include_self:
         ids.add(manager.id)

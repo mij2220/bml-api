@@ -267,6 +267,9 @@ class LeaveSettings(models.Model):
     """Single row (pk=1): switches Admin can change without a deploy."""
     # An SIC also sees all staff of the units ticked in their record (sic_units).
     sic_unit_visibility = models.BooleanField(default=True)
+    # Unit-based approval (Engro, 15 Oct 2026): requests go to all Supervisors,
+    # then all SICs of the person's unit. Off = each person's own Supervisor/SIC.
+    unit_approval = models.BooleanField(default=False, db_default=False)
     updated_at = models.DateTimeField(auto_now=True)
 
     @classmethod

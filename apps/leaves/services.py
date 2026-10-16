@@ -42,6 +42,7 @@ class LeavePermissionError(LeaveValidationError):
 STAGE_LABELS = {
     'pending_supervisor': 'Pending Supervisor',
     'pending_sic': 'Pending SIC',
+    'pending_manager': 'Pending Unit Manager',
     'pending_admin': 'Pending Admin',
     'approved': 'Approved',
     'rejected': 'Rejected',
@@ -63,6 +64,12 @@ def sic_approval_always():
     return bool(getattr(settings, 'LEAVE_SIC_APPROVAL_ALWAYS', True))
 
 
+def unit_approval_on():
+    """Admin switch (Leave Types page): unit-based approval."""
+    from .models import LeaveSettings
+    return LeaveSettings.get().unit_approval
+
+
 def required_levels(application):
     levels = max(1, application.leave_type.approval_levels or 1)
     if sic_approval_always():
@@ -70,28 +77,84 @@ def required_levels(application):
     return levels
 
 
-def level_approver(application, level):
-    """The Employee who approves at `level` for this application, or None when
-    nobody is assigned (or the only person assigned is the applicant).
-
-    Only the employee's own record decides this. The `shift_incharge` stored on
-    the application is for display on the leave pass and gives no authority."""
-    emp = application.employee
+def _legacy_approver(emp, level):
     if level == 1:
-        approver = emp.reporting_manager
-    elif level == 2:
-        approver = emp.shift_incharge
-    else:
-        approver = None
-    if approver is None or approver.pk == emp.pk:
-        return None
-    return approver
+        return emp.reporting_manager
+    if level == 2:
+        return emp.shift_incharge
+    return None
+
+
+# Who approves a request under unit-based approval, by the applicant's place in
+# the unit (Employee.unit_role). Levels: 1 Supervisors, 2 SICs, 3 Unit Manager.
+#   staff       -> 1 Supervisors, 2 SICs, 3 Unit Manager (only for 3-level leave types)
+#   supervisor  -> 2 SICs, 3 Unit Manager            (peers do not approve each other)
+#   sic         -> 2 Unit Manager                     (shown as "Pending Unit Manager")
+#   manager     -> nobody: Admin decides
+UNIT_LEVEL_ROLES = {
+    '':           {1: 'supervisor', 2: 'sic', 3: 'manager'},
+    'supervisor': {2: 'sic', 3: 'manager'},
+    'sic':        {2: 'manager', 3: 'manager'},
+    'manager':    {},
+}
+
+
+def unit_people(unit_id, role, exclude_id=None):
+    """Active people holding `role` in a unit. SICs also cover the units ticked
+    in their record (sic_units), e.g. the Plant-2 SIC for AMM-3 and URUT-3."""
+    from apps.employees.models import Employee
+    from django.db.models import Q
+    if not unit_id:
+        return []
+    q = Q(department_id=unit_id)
+    if role == 'sic':
+        q |= Q(sic_units__id=unit_id)
+    qs = (Employee.objects.filter(q, unit_role=role, status__in=['active', 'on_leave'], user__is_active=True)
+          .distinct().order_by('full_name'))
+    if exclude_id:
+        qs = qs.exclude(pk=exclude_id)
+    return list(qs)
+
+
+def level_approvers(application, level):
+    """Everyone who may approve at `level` (any one of them is enough). Empty
+    when nobody is assigned or the only person is the applicant.
+
+    Switch off: the employee's own Supervisor (level 1) / SIC (level 2).
+    Switch on: worked out from the applicant's unit at the moment of asking, so
+    when someone moves unit their requests follow the new unit's approvers. A
+    unit with nobody in that role falls back to the person's own Supervisor/SIC."""
+    emp = application.employee
+    if not unit_approval_on():
+        a = _legacy_approver(emp, level)
+        return [] if a is None or a.pk == emp.pk else [a]
+    role = UNIT_LEVEL_ROLES.get(emp.unit_role or '', UNIT_LEVEL_ROLES['']).get(level)
+    if role is None:
+        return []
+    people = unit_people(emp.department_id, role, exclude_id=emp.pk)
+    if not people and level in (1, 2) and (emp.unit_role or '') == '' :
+        a = _legacy_approver(emp, level)
+        people = [] if a is None or a.pk == emp.pk else [a]
+    return people
+
+
+def level_approver(application, level):
+    """The first approver of a level (kept for callers that show one name)."""
+    people = level_approvers(application, level)
+    return people[0] if people else None
 
 
 def approval_chain(application):
-    """The levels somebody has to approve, in order. Levels with nobody assigned are skipped."""
-    return [lvl for lvl in range(1, required_levels(application) + 1)
-            if level_approver(application, lvl) is not None]
+    """The levels somebody has to approve, in order. Levels with nobody assigned
+    are skipped, and so is a level with exactly the same people as the one before."""
+    chain, prev = [], None
+    dedupe = unit_approval_on()     # switch off: unchanged behaviour (one approval covers both rows)
+    for lvl in range(1, required_levels(application) + 1):
+        ids = frozenset(p.pk for p in level_approvers(application, lvl))
+        if ids and not (dedupe and ids == prev):
+            chain.append(lvl)
+            prev = ids
+    return chain
 
 
 def pending_level(application, approvals=None):
@@ -111,12 +174,18 @@ def pending_level(application, approvals=None):
 
 
 def get_stage(application, approvals=None):
-    """pending_supervisor | pending_sic | pending_admin | approved | rejected | returned | cancelled | expired"""
+    """pending_supervisor | pending_sic | pending_manager | pending_admin | approved | rejected | returned | cancelled | expired"""
     if application.status != 'pending':
         return application.status
     lvl = pending_level(application, approvals)
     if lvl is None:
         return 'pending_admin'
+    if unit_approval_on():
+        people = level_approvers(application, lvl)
+        roles = {p.unit_role for p in people}
+        if roles == {'manager'}:
+            return 'pending_manager'
+        return {1: 'pending_supervisor', 2: 'pending_sic', 3: 'pending_manager'}.get(lvl, f'pending_level_{lvl}')
     approver = level_approver(application, lvl)
     sic = application.employee.shift_incharge
     # Named after the person it is waiting for: e.g. a Supervisor's own request,
@@ -143,17 +212,20 @@ def waiting_for_name(application, approvals=None):
     lvl = pending_level(application, approvals)
     if lvl is None:
         return 'Admin'
-    approver = level_approver(application, lvl)
-    return approver.full_name if approver else 'Admin'
+    people = level_approvers(application, lvl)
+    if not people:
+        return 'Admin'
+    names = [p.full_name for p in people]
+    if len(names) <= 3:
+        return ' / '.join(names)
+    return ' / '.join(names[:3]) + f' +{len(names) - 3} more'
 
 
 def approver_ids_for(application):
     """Ids of everyone in this application's approval chain."""
     ids = set()
-    for lvl in (1, 2):
-        a = level_approver(application, lvl)
-        if a is not None:
-            ids.add(a.pk)
+    for lvl in (1, 2, 3):
+        ids |= {p.pk for p in level_approvers(application, lvl)}
     return ids
 
 
@@ -250,8 +322,7 @@ def application_permissions(application, user, approvals=None):
             # Nobody assigned: Admin decides (never their own request)
             perms['can_act'] = bool(is_admin and not is_owner)
         elif actor is not None:
-            expected = level_approver(application, lvl)
-            perms['can_act'] = expected is not None and expected.pk == actor.pk
+            perms['can_act'] = actor.pk in {p.pk for p in level_approvers(application, lvl)}
     return perms
 
 
@@ -283,23 +354,30 @@ def _resolve_actor_level(application, approver_employee, user):
             return ADMIN_LEVEL
         raise LeavePermissionError(
             'No Shift Supervisor or SIC is assigned for this employee, so this request is with Admin.')
-    expected = level_approver(application, level)
-    if expected is not None and expected.pk == approver_employee.pk:
+    expected = level_approvers(application, level)
+    if approver_employee.pk in {p.pk for p in expected}:
         return level
-    l1 = level_approver(application, 1)
-    l2 = level_approver(application, 2)
-    if level == 1 and l2 is not None and l2.pk == approver_employee.pk:
+    chain = approval_chain(application)
+    earlier = [l for l in chain if l < level]
+    later = [l for l in chain if l > level]
+    if any(approver_employee.pk in {p.pk for p in level_approvers(application, l)} for l in later):
+        if level == 1:
+            raise LeavePermissionError(
+                'This request is still waiting for the Shift Supervisor. '
+                'It will come to you once the Supervisor has approved it.'
+            )
         raise LeavePermissionError(
-            'This request is still waiting for the Shift Supervisor. '
-            'It will come to you once the Supervisor has approved it.'
+            'This request is still waiting for the earlier approval step. '
+            'It will come to you once that step is approved.'
         )
-    if level >= 2 and l1 is not None and l1.pk == approver_employee.pk:
+    if any(approver_employee.pk in {p.pk for p in level_approvers(application, l)} for l in earlier):
+        nxt = {2: 'the SIC', 3: 'the Unit Manager'}.get(level, 'the next approver')
         raise LeavePermissionError(
-            'You have already approved this request. It is now waiting for the SIC.'
+            f'You have already approved this request. It is now waiting for {nxt}.'
         )
-    if expected is not None:
-        raise LeavePermissionError(
-            f'This request is waiting for {expected.full_name}. Only they can act on it.')
+    if expected:
+        names = ', '.join(p.full_name for p in expected[:3])
+        raise LeavePermissionError(f'This request is waiting for {names}. Only they can act on it.')
     raise LeavePermissionError('You are not an approver for this leave application.')
 
 
@@ -565,8 +643,7 @@ class LeaveApplicationService:
             if next_level is None or current_level == ADMIN_LEVEL:
                 next_level = None       # nobody left in the chain: this approval is final
                 break
-            next_approver = level_approver(application, next_level)
-            if next_approver is not None and next_approver.pk == approver_employee.pk:
+            if approver_employee.pk in {p.pk for p in level_approvers(application, next_level)}:
                 # The same person holds the next stage too — one approval covers both.
                 current_level = next_level
                 continue

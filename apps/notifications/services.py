@@ -55,11 +55,11 @@ class NotificationService:
     def first_approvers(application):
         """Who a pending application is waiting for right now: the Supervisor, the
         SIC when no Supervisor is assigned, or the Admins when nobody is assigned."""
-        from apps.leaves.services import pending_level, level_approver
+        from apps.leaves.services import pending_level, level_approvers
         lvl = pending_level(application)
-        approver = level_approver(application, lvl) if lvl else None
-        if approver is not None:
-            return [approver]
+        people = level_approvers(application, lvl) if lvl else []
+        if people:
+            return people
         return [a for a in NotificationService.admins() if a.pk != application.employee_id]
 
     @staticmethod
@@ -113,20 +113,21 @@ class NotificationService:
     def notify_next_approver(application, level=2):
         """The previous level has approved — tell the approver of `level` (the SIC)."""
         try:
-            from apps.leaves.services import level_approver
+            from apps.leaves.services import level_approvers, get_stage
             emp = application.employee
-            approver = level_approver(application, level)
-            if approver is None:
+            people = level_approvers(application, level)
+            if not people:
                 return
-            role = "SIC" if level == 2 else f"Level {level}"
-            NotificationService.create(
-                approver, "leave_applied",
-                f"{role} approval required - {application.reference_number}",
-                f"{emp.full_name}'s {application.leave_type.name} from {application.start_date} "
-                f"to {application.end_date} ({_days(application)}) has been approved by "
-                f"the Shift Supervisor and is waiting for your approval.",
-                f"/approvals/{application.id}/",
-            )
+            role = {"pending_sic": "SIC", "pending_manager": "Unit Manager"}.get(get_stage(application), f"Level {level}")
+            for approver in people:
+                NotificationService.create(
+                    approver, "leave_applied",
+                    f"{role} approval required - {application.reference_number}",
+                    f"{emp.full_name}'s {application.leave_type.name} from {application.start_date} "
+                    f"to {application.end_date} ({_days(application)}) has passed the previous "
+                    f"approval step and is waiting for your approval.",
+                    f"/approvals/{application.id}/",
+                )
         except Exception as e:
             logger.warning("notify_next_approver failed: %s", e)
 
@@ -237,7 +238,7 @@ class NotificationService:
         Cancelled (recalled) by Supervisor / SIC / Admin -> tell the employee.
         The unit's Rota Manager is told whenever a pending or approved leave goes."""
         try:
-            from apps.leaves.services import level_approver
+            from apps.leaves.services import level_approvers
             emp = application.employee
             period = f"{application.start_date} to {application.end_date} ({_days(application)})"
             url = f"/my-leaves/{application.id}/"
@@ -247,10 +248,10 @@ class NotificationService:
                 body = (f"{emp.full_name} cancelled their {application.leave_type.name} "
                         f"from {period}.{because}")
                 recipients = {}
-                for lvl in (1, 2):
-                    a = level_approver(application, lvl)
-                    if a is not None and a.pk != emp.pk:
-                        recipients[a.pk] = a
+                for lvl in (1, 2, 3):
+                    for a in level_approvers(application, lvl):
+                        if a.pk != emp.pk:
+                            recipients[a.pk] = a
                 for a in recipients.values():
                     NotificationService.create(a, "leave_cancelled", title, body, "/approvals")
             else:

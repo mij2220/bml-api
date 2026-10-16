@@ -7,6 +7,14 @@ User = get_user_model()
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
+        # Plant staff may sign in with their P.No. (or Employee ID) instead of an email.
+        login = str(attrs.get('email') or '').strip()
+        if login and '@' not in login:
+            from apps.employees.models import Employee
+            emp = (Employee.objects.filter(p_number__iexact=login).select_related('user').first()
+                   or Employee.objects.filter(employee_id__iexact=login).select_related('user').first())
+            if emp is not None:
+                attrs['email'] = emp.user.email
         data = super().validate(attrs)
         data['user'] = UserMeSerializer(self.user).data
         return data

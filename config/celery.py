@@ -18,10 +18,11 @@ app.conf.beat_schedule = {
         'task': 'leaves.replenish_cd_balances',
         'schedule': crontab(hour=1, minute=5, day_of_month=1),
     },
-    # Yearly: year-end leave processing (Dec 31, 11pm)
+    # Yearly: close the year that has just ended (1 Jan, 01:30) - same as
+    # Admin > Quota Management > Year end; runs only if a worker exists.
     'yearly-year-end-processing': {
         'task': 'leaves.year_end_processing',
-        'schedule': crontab(hour=23, minute=0, month_of_year=12, day_of_month=31),
+        'schedule': crontab(hour=1, minute=30, month_of_year=1, day_of_month=1),
     },
     'monthly-leave-accrual': {
         'task': 'apps.leaves.tasks.run_monthly_accrual',

@@ -429,11 +429,10 @@ class PendingApprovalsView(APIView):
         #   * the SIC (Level 2) sees it only after the Supervisor has approved it;
         #   * a request from someone with no Supervisor and no SIC assigned goes to Admin,
         #     so that it never sits in nobody's list.
-        from .services import pending_level, level_approver
+        from .services import pending_level, level_approvers
+        from apps.employees.scope import team_ids
 
-        l1_ids = list(emp.direct_reports.values_list('id', flat=True))
-        l2_ids = list(emp.shift_incharge_for.values_list('id', flat=True))
-        all_team_ids = list(set(l1_ids + l2_ids))
+        all_team_ids = list(team_ids(emp))
         is_admin = request.user.is_hr_admin
 
         candidates = _application_queryset().filter(status='pending').order_by('applied_at')
@@ -449,8 +448,7 @@ class PendingApprovalsView(APIView):
                 if is_admin and app.employee_id != emp.pk:
                     apps.append(app)        # nobody assigned: Admin decides
                 continue
-            approver = level_approver(app, lvl)
-            if approver is not None and approver.pk == emp.pk:
+            if emp.pk in {p.pk for p in level_approvers(app, lvl)}:
                 apps.append(app)
         return success(
             LeaveApplicationListSerializer(apps, many=True, context={'request': request}).data)
@@ -963,17 +961,73 @@ class LeaveSettingsView(APIView):
 
     def get(self, request):
         from .models import LeaveSettings
-        return success({'sic_unit_visibility': LeaveSettings.get().sic_unit_visibility})
+        o = LeaveSettings.get()
+        return success({'sic_unit_visibility': o.sic_unit_visibility, 'unit_approval': o.unit_approval})
 
     def put(self, request):
         from .models import LeaveSettings
         if not request.user.is_hr_admin:
             return error('Permission denied.', status=403)
         obj = LeaveSettings.get()
-        if 'sic_unit_visibility' in request.data:
-            v = request.data['sic_unit_visibility']
-            obj.sic_unit_visibility = v in (True, 'true', 'True', '1', 1)
+        changed = {}
+        for key in ('sic_unit_visibility', 'unit_approval'):
+            if key in request.data:
+                v = request.data[key] in (True, 'true', 'True', '1', 1)
+                if getattr(obj, key) != v:
+                    setattr(obj, key, v)
+                    changed[key] = v
+        if changed:
             obj.save()
-            log_action(request, 'leave.settings_update', 'LeaveSettings', None,
-                       {'sic_unit_visibility': obj.sic_unit_visibility})
-        return success({'sic_unit_visibility': obj.sic_unit_visibility}, 'Saved.')
+            log_action(request, 'leave.settings_update', 'LeaveSettings', None, changed)
+        return success({'sic_unit_visibility': obj.sic_unit_visibility, 'unit_approval': obj.unit_approval}, 'Saved.')
+
+
+class YearEndView(APIView):
+    """Admin > Quota Management > Year end.
+    GET  ?year=2026 : preview of closing that year (carry forward, lapsed days, next year's quota).
+    POST {year, step: 'create' | 'carry'} : create next year's balances / apply carry forward."""
+    permission_classes = [IsHRAdmin]
+
+    def _year(self, raw):
+        try:
+            return int(raw or timezone.localdate().year)
+        except (TypeError, ValueError):
+            return None
+
+    def get(self, request):
+        from datetime import date as _d
+        from .year_end import preview
+        year = self._year(request.query_params.get('year'))
+        if year is None:
+            return error('Year must be a number.')
+        today = timezone.localdate()
+        rows = preview(year)
+        return success({
+            'year': year, 'next_year': year + 1, 'rows': rows,
+            'can_create': today >= _d(year, 12, 1), 'can_carry': today >= _d(year + 1, 1, 1),
+            'create_from': str(_d(year, 12, 1)), 'carry_from': str(_d(year + 1, 1, 1)),
+            'totals': {
+                'people': len(rows),
+                'carry': round(sum(r['carry'] for r in rows), 2),
+                'lapsed': round(sum(r['lapsed'] for r in rows), 2),
+                'missing_next': sum(1 for r in rows if not r['next_exists']),
+            },
+        })
+
+    def post(self, request):
+        from .year_end import create_balances, carry_forward, YearEndError
+        year = self._year(request.data.get('year'))
+        step = request.data.get('step')
+        if year is None or step not in ('create', 'carry'):
+            return error('Give the year and the step (create or carry).')
+        try:
+            result = create_balances(year) if step == 'create' else carry_forward(year)
+        except YearEndError as e:
+            return error(str(e))
+        log_action(request, f'leave.year_end_{step}', 'LeaveBalance', None, result)
+        msg = (f"{result['year']} balances created for {result['balances_created']} leave balances."
+               if step == 'create' else
+               f"Carry forward from {year} applied: {result['days_carried']:g} days carried, "
+               f"{result['days_lapsed']:g} days above the yearly entitlement lapsed "
+               f"({result['people_changed']} people changed).")
+        return success(result, msg)
