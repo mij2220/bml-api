@@ -16,6 +16,12 @@ Assumptions (Engro to confirm; all editable afterwards in Admin > Employees):
       corrected by Admin (marked "check details" in the result).
   O-4 Login: P.No. (or the MPT ID) with the password Employee@1234 / Manager@1234,
       changed at first sign-in. Email is a placeholder <id>@staff.shiftledger.local.
+      Engro (Adan Habib, 17 Oct 2026): "use their names as their IDs" - names
+      repeat (e.g. Abdul Sami x3), so the MPT ID stays the login; the name is shown.
+  O-5 Shared SICs (Adan Habib, 17 Oct 2026): URUT-3 has the SICs of AMM-3, Urea-2
+      those of AMM-2 and PM&S those of URUT-1. The "Staff List" sheet lists these
+      SICs under their own unit only, so every SIC of the home unit is also linked
+      to the partner unit ("also covers", sic_units). Links are only added.
 """
 import re
 from datetime import date
@@ -27,6 +33,11 @@ LEVEL_ROLE = {'unit manager': 'manager', 'sic': 'sic', 'engineer/supervisor': 's
 SKIP_UNITS = {'department', 'pp'}
 APPROVER_ROLES = ('manager', 'sic', 'supervisor')
 PLACEHOLDER_JOIN = date(2026, 1, 1)
+# partner unit -> unit whose SICs also cover it (O-5)
+SHARED_SIC = {'urut3': 'amm3', 'ur2': 'amm2', 'pm&s': 'urut1'}
+COVERED_BY = {}
+for _partner, _home in SHARED_SIC.items():
+    COVERED_BY.setdefault(_home, []).append(_partner)
 EMAIL_DOMAIN = 'staff.shiftledger.local'
 
 
@@ -106,6 +117,8 @@ def plan(rows):
             continue
         dept = units.get(uk)
         r['unit_exists'] = dept is not None
+        if r['unit_role'] == 'sic' and uk in COVERED_BY:
+            r['also_covers'] = [units[p].name if p in units else p.upper() for p in COVERED_BY[uk]]
         r['unit_name'] = dept.name if dept else row['unit']
         emp, how = None, ''
         if row['p_number'] and row['p_number'] in by_pno:
@@ -153,6 +166,7 @@ def summary(planned):
     s = {}
     for r in planned:
         s[r['action']] = s.get(r['action'], 0) + 1
+    s['sic_links'] = sum(len(r.get('also_covers') or []) for r in planned if r['action'] != 'skip')
     s['new_units'] = sorted({r['unit_name'] for r in planned if r.get('unit_exists') is False and r['action'] != 'skip'})
     return s
 
@@ -220,4 +234,22 @@ def apply(rows, actor_user=None):
         r.update(employee_id=str(emp.pk), login=emp_id, password=password)
         logins.append({'name': emp.full_name, 'unit': dept.name, 'login': emp_id, 'password': password,
                        'place': r['unit_role'] or 'staff'})
+    link_shared_sics(units)
     return planned, logins
+
+
+def link_shared_sics(units=None):
+    """O-5: every SIC of a home unit also covers its partner unit. Only adds links;
+    returns the number added. Safe to repeat (e.g. on re-loading the organogram)."""
+    from apps.employees.models import Employee, Department
+    if units is None:
+        units = {unit_key(d.name): d for d in Department.objects.all()}
+    added = 0
+    for partner, home in SHARED_SIC.items():
+        if partner not in units or home not in units:
+            continue
+        for emp in Employee.objects.filter(department=units[home], unit_role='sic'):
+            if not emp.sic_units.filter(pk=units[partner].pk).exists():
+                emp.sic_units.add(units[partner])
+                added += 1
+    return added

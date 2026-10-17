@@ -44,7 +44,7 @@ class EmployeeListSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ['id','employee_id','p_number','full_name','email','role','is_shared_account','department_name',
                   'designation_name','manager_name','reporting_manager_id', 'shift_incharge_id',
-                  'status','employment_type','profile_picture','created_at','unit_role','department_id']
+                  'status','employment_type','profile_picture','created_at','unit_role','department_id','religion']
 
 class EmployeeDetailSerializer(serializers.ModelSerializer):
     experience_display = serializers.SerializerMethodField()
@@ -106,7 +106,7 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ['id','employee_id','p_number','full_name','email','role','is_shared_account','cnic','gender','date_of_birth',
                   'phone','joining_date','experience_start_date','experience_display','experience_years','experience_tier','employment_type','salary_grade', 'account_code','department','designation',
-                  'branch','reporting_manager','reporting_manager_id','shift_incharge','shift_incharge_id','sic_units','sic_unit_ids','status','profile_picture','profile_picture_url','created_at','updated_at','unit_role']
+                  'branch','reporting_manager','reporting_manager_id','shift_incharge','shift_incharge_id','sic_units','sic_unit_ids','status','profile_picture','profile_picture_url','created_at','updated_at','unit_role','religion']
 
     def update(self, instance, validated_data):
         from apps.employees.models import Employee as Emp
@@ -178,7 +178,7 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ['employee_id','p_number','full_name','email','password','role','is_shared_account','cnic','gender',
                   'date_of_birth','phone','joining_date','experience_start_date','employment_type','salary_grade',
-                  'department_id','designation_id','branch_id','reporting_manager_id','unit_role']
+                  'department_id','designation_id','branch_id','reporting_manager_id','unit_role','religion']
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError('A user with this email already exists.')
