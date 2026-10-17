@@ -95,6 +95,7 @@ def plan(rows):
     for e in Employee.objects.all():
         by_name.setdefault(name_key(e.full_name), []).append(e)
     result = []
+    taken = {}       # employee pk -> first row that matched them
     for row in rows:
         r = dict(row)
         uk = unit_key(row['unit'])
@@ -111,13 +112,28 @@ def plan(rows):
             emp, how = by_pno[row['p_number']], 'P.No.'
         if emp is None:
             same = by_name.get(name_key(row['name']), [])
+            if row['p_number']:
+                # A name match must never override a different P.No.: two people can
+                # share a name (e.g. Abdul Sami 2356 in AMM-2 and 733 in URUT-3).
+                same = [e for e in same if not e.p_number or e.p_number == row['p_number']]
+            elif len(same) > 1:
+                # No P.No. in the sheet (Managers / SICs / Supervisors): prefer the one
+                # without a P.No. either, e.g. Asif Hussain (Shift Engineer) vs operator 626.
+                no_pno = [e for e in same if not e.p_number]
+                if len(no_pno) == 1:
+                    same = no_pno
             if len(same) == 1:
                 emp, how = same[0], 'name'
             elif len(same) > 1:
                 r.update(action='skip', reason=f'{len(same)} employees have this name - fix by hand')
                 result.append(r)
                 continue
+        if emp is not None and str(emp.pk) in taken:
+            r.update(action='skip', reason=f'Same person as an earlier row ({taken[str(emp.pk)]}) - check the sheet')
+            result.append(r)
+            continue
         if emp is not None:
+            taken[str(emp.pk)] = f"{row['unit']}, {row['name']}"
             changes = []
             if dept is None or emp.department_id != dept.pk:
                 changes.append(f"unit {emp.department.name if emp.department_id else '-'} -> {r['unit_name']}")

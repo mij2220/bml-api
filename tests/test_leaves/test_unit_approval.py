@@ -214,3 +214,21 @@ class TestLoginAndOrgChart:
         mine = client_for(o.sup).get(f'{API}/org-chart/').data['data']['units']
         assert [x['name'] for x in mine] == ['Urea-III']
         assert client_for(o.op1).get(f'{API}/org-chart/').status_code == 403
+
+
+class TestOrganogramSameName:
+
+    def test_same_name_different_p_number_is_a_new_person(self, org, client_for):
+        """Staging, 17 Oct: 'MUNEER AHMED 470' (URUT-3) was matched by name to Muneer Ahmed
+        70000214 (AMM-2) and moved him. A different P.No. is always a different person."""
+        from apps.employees.models import Employee
+        org.op1.p_number = '70000214'; org.op1.full_name = 'Muneer Ahmed'; org.op1.save()
+        rows = [('Urea-3', 'Operator', 'MUNEER AHMED', 70000214, 'Operator', 'NMPT'),
+                ('Ammonia-2', 'Operator', 'MUNEER AHMED', 470, 'Operator', 'NMPT')]
+        r = client_for(org.admin).post(f'{API}/employees/organogram-import/',
+                                       {'file': organogram_xlsx(rows), 'apply': 'true'}, format='multipart')
+        assert r.status_code == 200, r.data
+        org.op1.refresh_from_db()
+        assert org.op1.department == org.unit                      # not moved
+        other = Employee.objects.get(p_number='470')
+        assert other.department == org.other_unit and other.pk != org.op1.pk
