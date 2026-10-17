@@ -661,3 +661,33 @@ class OrgChartView(APIView):
                           'supervisors': by['supervisor'], 'staff': by[''], 'total': len(people)})
         from apps.leaves.models import LeaveSettings
         return success({'units': units, 'unit_approval': LeaveSettings.get().unit_approval})
+
+
+class ReligionImportView(APIView):
+    """Admin > Employees > Load religion list. POST multipart `file` (.xlsx / .csv
+    with "Religion" and "P.No" / "Employee ID" / "Name") and `apply` = false
+    (preview) / true (save). Only the religion field changes."""
+    permission_classes = [IsHRAdmin]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from .religion_import import read_rows, plan, apply, summary, ReligionImportError
+        f = request.FILES.get('file')
+        if f is None:
+            return error('Choose the religion list (Excel or CSV).')
+        if f.size > 5 * 1024 * 1024:
+            return error('The file is too large (maximum 5 MB).')
+        try:
+            rows = read_rows(f, f.name)
+        except ReligionImportError as e:
+            return error(str(e))
+        if not rows:
+            return error('No people found in the file.')
+        if str(request.data.get('apply', '')).lower() in ('1', 'true', 'yes'):
+            planned = apply(rows)
+            s = summary(planned)
+            log_action(request, 'employee.religion_loaded', 'Employee', None, {'file': f.name, 'summary': s})
+            return success({'rows': planned, 'summary': s, 'applied': True},
+                           f"Religion saved for {s.get('update', 0)} people.")
+        planned = plan(rows)
+        return success({'rows': planned, 'summary': summary(planned), 'applied': False})

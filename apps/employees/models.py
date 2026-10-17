@@ -54,6 +54,10 @@ class Designation(BaseModel):
         return f'{self.name} ({self.department.name})'
 
 
+RELIGION_CHOICES = [('muslim', 'Muslim'), ('christian', 'Christian'), ('hindu', 'Hindu'),
+                    ('sikh', 'Sikh'), ('other', 'Other')]
+
+
 class Employee(BaseModel):
     user = models.OneToOneField('accounts.User', on_delete=models.CASCADE,
                                 related_name='employee_profile')
@@ -88,6 +92,10 @@ class Employee(BaseModel):
     # approval switched on, a leave request goes to every Supervisor of the
     # person's unit, then every SIC, (then the Unit Manager where the leave type
     # needs three levels) - so approvers follow the unit automatically.
+    # Engro, 17 Oct 2026: religion-based gazetted holidays go only to people of
+    # that religion. Blank = not recorded (gets only the holidays for everyone).
+    religion = models.CharField(max_length=20, blank=True, default='', db_default='',
+                                choices=RELIGION_CHOICES)
     unit_role = models.CharField(max_length=20, blank=True, default='', db_default='',
                                  choices=UNIT_ROLE_CHOICES, db_index=True)
     branch = models.ForeignKey(Branch, null=True, blank=True,

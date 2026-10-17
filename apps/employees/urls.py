@@ -4,11 +4,12 @@ from .views import (
     EmployeeBalancesView, EmployeeDocumentView,
     DepartmentView, DesignationView, DesignationDetailView, BranchView,
     QuotaManagementView,
-    TeamBalancesView, OrganogramImportView, OrgChartView,
+    TeamBalancesView, OrganogramImportView, OrgChartView, ReligionImportView,
 )
 
 urlpatterns = [
     path('employees/organogram-import/', OrganogramImportView.as_view(), name='organogram-import'),
+    path('employees/religion-import/', ReligionImportView.as_view(), name='religion-import'),
     path('org-chart/', OrgChartView.as_view(), name='org-chart'),
     path('employees/', EmployeeListCreateView.as_view(), name='employee-list'),
     path('employees/me/balances/', MeBalancesView.as_view(), name='employee-me-balances'),

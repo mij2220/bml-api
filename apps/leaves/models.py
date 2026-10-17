@@ -57,10 +57,16 @@ class PublicHoliday(BaseModel):
     date = models.DateField()
     name = models.CharField(max_length=100)
     is_optional = models.BooleanField(default=False)
+    # Engro, 17 Oct 2026: blank = for everyone; otherwise only for people of this
+    # religion (e.g. 25-26 Dec for Christians). Same codes as Employee.religion.
+    religion = models.CharField(max_length=20, blank=True, default='', db_default='')
 
     class Meta:
         ordering = ['date']
         unique_together = ['calendar', 'date']
+
+    def applies_to(self, employee):
+        return not self.religion or self.religion == (getattr(employee, 'religion', '') or '')
 
     def __str__(self):
         return f'{self.name} ({self.date})'

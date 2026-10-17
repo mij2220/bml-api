@@ -16,9 +16,20 @@ from apps.core.utils import success, error, log_action
 from .models import HolidayCalendar, PublicHoliday, HolidayCompensation, LeaveBalance, LeaveType, LeaveQuotaLog
 
 
+RELIGIONS = {'muslim', 'christian', 'hindu', 'sikh', 'other'}
+
+
 def _row(h):
     return {'id': str(h.id), 'date': str(h.date), 'name': h.name, 'is_optional': h.is_optional,
-            'counts_as_gh': not h.is_optional and h.calendar.is_default}
+            'counts_as_gh': not h.is_optional and h.calendar.is_default, 'religion': h.religion}
+
+
+def _religion(request):
+    """(value, error message): '' = for everyone."""
+    r = str(request.data.get('religion') or '').strip().lower()
+    if r and r not in RELIGIONS:
+        return None, 'Religion must be one of: ' + ', '.join(sorted(RELIGIONS)) + ' (or empty for everyone).'
+    return r, None
 
 
 class GazettedHolidaysView(APIView):
@@ -43,17 +54,40 @@ class GazettedHolidaysView(APIView):
         name = str(request.data.get('name') or '').strip()
         if not name:
             return error('Enter the holiday name.')
+        religion, msg = _religion(request)
+        if msg:
+            return error(msg)
         cal = HolidayCalendar.objects.filter(year=d.year, is_default=True).first() or \
             HolidayCalendar.objects.create(name=f'Gazetted holidays {d.year}', year=d.year, is_default=True)
-        h, created = PublicHoliday.objects.get_or_create(calendar=cal, date=d, defaults={'name': name[:100]})
+        h, created = PublicHoliday.objects.get_or_create(calendar=cal, date=d, defaults={'name': name[:100], 'religion': religion})
         if not created:
             return error('There is already a holiday on this date.')
-        log_action(request, 'leave.holiday_create', 'PublicHoliday', h.pk, {'date': str(d), 'name': name})
+        log_action(request, 'leave.holiday_create', 'PublicHoliday', h.pk, {'date': str(d), 'name': name, 'religion': religion})
         return success(_row(h), 'Added.', status=201)
 
 
 class GazettedHolidayDetailView(APIView):
     permission_classes = [IsEmployee]
+
+    def patch(self, request, pk):
+        """Admin: change who the holiday is for ({religion: '' | 'christian' | ...})."""
+        if not request.user.is_hr_admin:
+            return error('Permission denied.', status=403)
+        h = PublicHoliday.objects.filter(pk=pk).select_related('calendar').first()
+        if h is None:
+            return error('Holiday not found.', status=404)
+        religion, msg = _religion(request)
+        if msg:
+            return error(msg)
+        if religion and h.compensations.exclude(employee__religion=religion).exists():
+            return error('Compensatory days were already given for this holiday to people of another religion, '
+                         'so it cannot be limited to one religion.')
+        old = h.religion
+        h.religion = religion
+        h.save(update_fields=['religion', 'updated_at'])
+        log_action(request, 'leave.holiday_update', 'PublicHoliday', h.pk,
+                   {'date': str(h.date), 'name': h.name, 'religion': [old, religion]})
+        return success(_row(h), 'Saved.')
 
     def delete(self, request, pk):
         if not request.user.is_hr_admin:
@@ -108,6 +142,9 @@ class HolidayCompensationView(APIView):
             return error('Choose the gazetted holiday.')
         if h.date > timezone.localdate():
             return error('This holiday has not come yet.')
+        if not h.applies_to(emp):
+            return error(f'{h.name} is a holiday for {h.religion.title()} staff only, and {emp.full_name} '
+                         f'is not recorded as {h.religion.title()} (see the employee record).')
         cd = LeaveType.objects.filter(code='CD').first()
         if cd is None:
             return error('The Compensatory Day (CD) leave type is not set up. Ask Admin to add it under Leave Types.')
